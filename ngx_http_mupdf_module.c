@@ -39,11 +39,11 @@ static ngx_int_t runpage(ngx_log_t *log, fz_context *context, fz_document *docum
 }
 
 static ngx_int_t runrange(ngx_log_t *log, fz_context *context, fz_document *document, const char *range, fz_document_writer *document_writer) {
-//    fz_try(context) {
+    fz_var(range);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "range = %s", range);
     int count;
-    //fz_try(context) 
-    count = fz_count_pages(context, document);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_count_pages: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_var(count);
+    fz_try(context) count = fz_count_pages(context, document); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_count_pages: %s", fz_caught_message(context)); return NGX_ERROR; }
     int start, end;
     while ((range = fz_parse_page_range(context, range, &start, &end, count))) {
         if (start < end) {
@@ -56,7 +56,6 @@ static ngx_int_t runrange(ngx_log_t *log, fz_context *context, fz_document *docu
             }
         }
     }
-//    } fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_caught_message: %s", fz_caught_message(context)); return NGX_ERROR; }
     return NGX_OK;
 }
 
