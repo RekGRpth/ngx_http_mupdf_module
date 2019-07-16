@@ -89,6 +89,7 @@ fz_close_document_writer:
     unsigned char *output_data = NULL;
     fz_try(context) out.len = fz_buffer_storage(context, output_buffer, &output_data); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_buffer_storage: %s", fz_caught_message(context)); goto fz_close_document_writer; }
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "out.len = %ul", out.len);
+//    fz_save_buffer(context, output_buffer, "output_buffer.pdf");
     if (out.len) out.data = ngx_palloc(r->pool, out.len);
     if (out.data) ngx_memcpy(out.data, output_data, out.len);
 fz_drop_document:
