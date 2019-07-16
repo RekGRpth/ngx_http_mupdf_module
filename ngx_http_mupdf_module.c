@@ -172,7 +172,7 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
     ngx_http_mupdf_loc_conf_t *conf = child;
     ngx_conf_merge_str_value(conf->input_type, prev->input_type, "html");
     ngx_conf_merge_str_value(conf->output_type, prev->output_type, "pdf");
-    ngx_conf_merge_str_value(conf->options, prev->options, "");
+    ngx_conf_merge_str_value(conf->options, prev->options, NULL);
     ngx_conf_merge_str_value(conf->range, prev->range, "1-N");
     if (!conf->input_data) conf->input_data = prev->input_data;
     return NGX_CONF_OK;
