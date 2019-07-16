@@ -15,26 +15,19 @@ typedef struct {
 ngx_module_t ngx_http_mupdf_module;
 
 static ngx_int_t runpage(ngx_log_t *log, fz_context *context, fz_document *document, int number, fz_document_writer *document_writer) {
-//    fz_try(context) {
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "number = %i", number);
     fz_page *page;
-    //fz_try(context) 
-    page = fz_load_page(context, document, number - 1);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_load_page: %s", fz_caught_message(context)); return NGX_ERROR; }
-    fz_device *dev;
-    //fz_try(context) 
-    fz_var(dev);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_var: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_var(page);
+    fz_try(context) page = fz_load_page(context, document, number - 1); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_load_page: %s", fz_caught_message(context)); return NGX_ERROR; }
     fz_rect mediabox;
-    //fz_try(context) 
-    mediabox = fz_bound_page(context, page);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_bound_page: %s", fz_caught_message(context)); return NGX_ERROR; }
-    //fz_try(context) 
-    dev = fz_begin_page(context, document_writer, mediabox);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_begin_page: %s", fz_caught_message(context)); return NGX_ERROR; }
-    //fz_try(context) 
-    fz_run_page(context, page, dev, fz_identity, NULL);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_run_page: %s", fz_caught_message(context)); return NGX_ERROR; }
-    //fz_try(context) 
-    fz_end_page(context, document_writer);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_end_page: %s", fz_caught_message(context)); return NGX_ERROR; }
-    //fz_try(context) 
-    fz_drop_page(context, page);// fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_drop_page: %s", fz_caught_message(context)); return NGX_ERROR; }
-//    } fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_caught_message: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_var(mediabox);
+    fz_try(context) mediabox = fz_bound_page(context, page); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_bound_page: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_device *dev;
+    fz_var(dev);
+    fz_try(context) dev = fz_begin_page(context, document_writer, mediabox); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_begin_page: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_try(context) fz_run_page(context, page, dev, fz_identity, NULL); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_run_page: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_try(context) fz_end_page(context, document_writer); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_end_page: %s", fz_caught_message(context)); return NGX_ERROR; }
+    fz_try(context) fz_drop_page(context, page); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_drop_page: %s", fz_caught_message(context)); return NGX_ERROR; }
     return NGX_OK;
 }
 
