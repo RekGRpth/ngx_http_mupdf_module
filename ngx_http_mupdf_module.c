@@ -88,13 +88,13 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
 //    if (runrange(r->connection->log, context, document, (const char *)conf->range.data, document_writer) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "runrange != NGX_OK"); goto fz_close_document_writer; }
     fz_try(context) document_writer = fz_new_document_writer(context, "buf:", "pdf", NULL); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_new_document_writer: %s", fz_caught_message(context)); goto fz_drop_document; }
     if (runrange(r->connection->log, context, document, "1-N", document_writer) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "runrange != NGX_OK"); goto fz_close_document_writer; }
+fz_close_document_writer:
+    fz_close_document_writer(context, document_writer);
+    fz_drop_document_writer(context, document_writer);
     unsigned char *output_data = NULL;
     fz_try(context) out.len = fz_buffer_storage(context, output_buffer, &output_data); fz_catch(context) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_buffer_storage: %s", fz_caught_message(context)); goto fz_close_document_writer; }
     if (out.len) out.data = ngx_palloc(r->pool, out.len);
     if (out.data) ngx_memcpy(out.data, output_data, out.len);
-fz_close_document_writer:
-    fz_close_document_writer(context, document_writer);
-    fz_drop_document_writer(context, document_writer);
 fz_drop_document:
     fz_drop_document(context, document);
 fz_drop_buffer_input_buffer:
