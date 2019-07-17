@@ -71,7 +71,7 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     char *range = ngx_pcalloc(r->pool, conf->range.len + 1);
     if (!range) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!range"); goto ret; }
     ngx_memcpy(range, conf->range.data, conf->range.len);
-    ngx_str_t input_data;//, out = {0, NULL};
+    ngx_str_t input_data;
     size_t output_len = 0;
     if (ngx_http_complex_value(r, conf->input_data, &input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); goto ret; }
     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, input_type, output_type, range, options);
@@ -102,7 +102,8 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     }
     unsigned char *output_data = NULL;
     output_len = fz_buffer_storage(ctx, output_buffer, &output_data);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "output_len = %ul", output_len);
+    if (!output_len) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_buffer_storage"); goto fz_drop_context; }
+//    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "output_len = %ul", output_len);
     ngx_buf_t *buf = ngx_create_temp_buf(r->pool, output_len);
     fz_var(buf);
     if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); goto fz_drop_context; }
@@ -116,7 +117,7 @@ fz_drop_context:
         r->headers_out.status = NGX_HTTP_OK;
         r->headers_out.content_length_n = output_len;
         rc = ngx_http_send_header(r);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
+//        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
         ngx_http_weak_etag(r);
         if (rc == NGX_ERROR || rc > NGX_OK || r->header_only); else rc = ngx_http_output_filter(r, &ch);
     }
