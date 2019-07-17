@@ -14,42 +14,34 @@ typedef struct {
 
 ngx_module_t ngx_http_mupdf_module;
 
-static ngx_int_t runpage(ngx_log_t *log, fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri) {
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "number = %i", number);
-    fz_page *page;
-    fz_var(page);
-    fz_try(ctx) page = fz_load_page(ctx, doc, number - 1); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_load_page: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    fz_rect mediabox;
-    fz_var(mediabox);
-    fz_try(ctx) mediabox = fz_bound_page(ctx, page); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_bound_page: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    fz_device *dev;
-    fz_var(dev);
-    fz_try(ctx) dev = fz_begin_page(ctx, wri, mediabox); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_begin_page: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    fz_try(ctx) fz_run_page(ctx, page, dev, fz_identity, NULL); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_run_page: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    fz_try(ctx) fz_end_page(ctx, wri); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_end_page: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    fz_try(ctx) fz_drop_page(ctx, page); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_drop_page: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    return NGX_OK;
+static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri) {
+    fz_page *page = fz_load_page(ctx, doc, number - 1);
+    fz_try(ctx) {
+        fz_rect mediabox = fz_bound_page(ctx, page);
+        fz_device *dev = fz_begin_page(ctx, wri, mediabox);
+        fz_run_page(ctx, page, dev, fz_identity, NULL);
+        fz_end_page(ctx, wri);
+    } fz_always(ctx) {
+        fz_drop_page(ctx, page);
+    } fz_catch(ctx) {
+        fz_rethrow(ctx);
+    }
 }
 
-static ngx_int_t runrange(ngx_log_t *log, fz_context *ctx, fz_document *doc, const char *range, fz_document_writer *wri) {
-    fz_var(range);
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, log, 0, "range = %s", range);
-    int count;
-    fz_var(count);
-    fz_try(ctx) count = fz_count_pages(ctx, doc); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "fz_count_pages: %s", fz_caught_message(ctx)); return NGX_ERROR; }
-    int start, end;
+static void runrange(fz_context *ctx, fz_document *doc, const char *range, fz_document_writer *wri) {
+    int start, end, count;
+    count = fz_count_pages(ctx, doc);
     while ((range = fz_parse_page_range(ctx, range, &start, &end, count))) {
         if (start < end) {
             for (int i = start; i <= end; i++) {
-                if (runpage(log, ctx, doc, i, wri) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, log, 0, "runpage != NGX_OK"); return NGX_ERROR; }
+                runpage(ctx, doc, i, wri);
             }
         } else {
             for (int i = start; i >= end; i--) {
-                if (runpage(log, ctx, doc, i, wri) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, log, 0, "runpage != NGX_OK"); return NGX_ERROR; }
+                runpage(ctx, doc, i, wri);
             }
         }
     }
-    return NGX_OK;
 }
 
 static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
@@ -59,50 +51,56 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     if (rc != NGX_OK && rc != NGX_AGAIN) return rc;
     ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
     rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+    char *input_type = ngx_pcalloc(r->pool, conf->input_type.len + 1);
+    if (!input_type) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); goto ret; }
+    ngx_memcpy(input_type, conf->input_type.data, conf->input_type.len);
+    char *output_type = ngx_pcalloc(r->pool, conf->output_type.len + 1);
+    if (!output_type) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!output_type"); goto ret; }
+    ngx_memcpy(output_type, conf->output_type.data, conf->output_type.len);
+    char *options = ngx_pcalloc(r->pool, conf->options.len + 1);
+    if (!options) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!options"); goto ret; }
+    ngx_memcpy(options, conf->options.data, conf->options.len);
+    char *range = ngx_pcalloc(r->pool, conf->range.len + 1);
+    if (!range) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!range"); goto ret; }
+    ngx_memcpy(range, conf->range.data, conf->range.len);
     ngx_str_t input_data, out = {0, NULL};
     if (ngx_http_complex_value(r, conf->input_data, &input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); goto ret; }
-    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, conf->input_type.data, conf->output_type.data, conf->range.data, conf->options.data);
+    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, input_type, output_type, range, options);
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
     if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
-    fz_try(ctx) fz_register_document_handlers(ctx); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_register_document_handlers: %s", fz_caught_message(ctx)); goto fz_drop_context; }
-    fz_try(ctx) fz_set_use_document_css(ctx, 1); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_set_use_document_css: %s", fz_caught_message(ctx)); goto fz_drop_context; }
-    fz_buffer *output_buffer;
-    fz_var(output_buffer);
-    fz_try(ctx) output_buffer = fz_new_buffer(ctx, 0); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_new_buffer: %s", fz_caught_message(ctx)); goto fz_drop_context; }
-    ctx->user = output_buffer;
-    fz_buffer *input_buffer;
-    fz_var(input_buffer);
-    fz_try(ctx) input_buffer = fz_new_buffer_from_data(ctx, input_data.data, input_data.len); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_new_buffer_from_data: %s", fz_caught_message(ctx)); goto fz_drop_buffer_output_buffer; }
-    fz_stream *input_stream;
-    fz_var(input_stream);
-    fz_try(ctx) input_stream = fz_open_buffer(ctx, input_buffer); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_open_buffer: %s", fz_caught_message(ctx)); goto fz_drop_buffer_input_buffer; }
-    fz_document *doc;
-    fz_var(doc);
-    fz_try(ctx) doc = fz_open_document_with_stream(ctx, (const char *)conf->input_type.data, input_stream); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_open_document_with_stream: %s", fz_caught_message(ctx)); goto fz_drop_buffer_input_buffer; }
-    fz_document_writer *wri;
-    fz_var(wri);
-    fz_try(ctx) wri = fz_new_document_writer(ctx, "buf:", (const char *)conf->output_type.data, (const char *)conf->options.data); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_new_document_writer: %s", fz_caught_message(ctx)); goto fz_drop_document; }
-    if (runrange(r->connection->log, ctx, doc, (const char *)conf->range.data, wri) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "runrange != NGX_OK"); goto fz_close_document_writer; }
-fz_close_document_writer:
-    fz_close_document_writer(ctx, wri);
+    fz_buffer *output_buffer; fz_var(output_buffer);
+    fz_buffer *input_buffer; fz_var(input_buffer);
+    fz_document *doc; fz_var(doc);
+    fz_document_writer *wri; fz_var(wri);
+    fz_try(ctx) {
+        fz_register_document_handlers(ctx);
+        fz_set_use_document_css(ctx, 1);
+        output_buffer = fz_new_buffer(ctx, 0);
+        fz_set_user_context(ctx, output_buffer);
+        input_buffer = fz_new_buffer_from_data(ctx, (unsigned char *)input_data.data, input_data.len);
+        fz_stream *input_stream = fz_open_buffer(ctx, input_buffer);
+        doc = fz_open_document_with_stream(ctx, input_type, input_stream);
+        wri = fz_new_document_writer(ctx, "buf:", output_type, options);
+        runrange(ctx, doc, range, wri);
+    } fz_always(ctx) {
+        fz_close_document_writer(ctx, wri);
+        fz_drop_document_writer(ctx, wri);
+        fz_drop_document(ctx, doc);
+        fz_drop_buffer(ctx, input_buffer);
+    } fz_catch(ctx) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_caught_message: %s", fz_caught_message(ctx));
+        goto fz_drop_context;
+    }
     unsigned char *output_data = NULL;
-    fz_try(ctx) out.len = fz_buffer_storage(ctx, output_buffer, &output_data); fz_catch(ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_buffer_storage: %s", fz_caught_message(ctx)); goto fz_close_document_writer; }
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "out.len = %ul", out.len);
-//    fz_save_buffer(ctx, output_buffer, "output_buffer.pdf");
+    out.len = fz_buffer_storage(ctx, output_buffer, &output_data);
     if (out.len) out.data = ngx_palloc(r->pool, out.len);
     if (out.data) ngx_memcpy(out.data, output_data, out.len);
-    fz_drop_document_writer(ctx, wri);
-fz_drop_document:
-    fz_drop_document(ctx, doc);
-fz_drop_buffer_input_buffer:
-    fz_drop_buffer(ctx, input_buffer);
-fz_drop_buffer_output_buffer:
-    fz_drop_buffer(ctx, output_buffer);
+//    fz_save_buffer(ctx, output_buffer, "output_buffer.pdf");
 fz_drop_context:
     fz_drop_context(ctx);
     if (out.data) {
         ngx_chain_t ch = {.buf = &(ngx_buf_t){.pos = out.data, .last = out.data + out.len, .memory = 1, .last_buf = 1}, .next = NULL};
-        ngx_str_set(&r->headers_out.content_type, "application/pdf");
+//        ngx_str_set(&r->headers_out.content_type, "application/pdf");
         r->headers_out.status = NGX_HTTP_OK;
         r->headers_out.content_length_n = out.len;
         rc = ngx_http_send_header(r);
@@ -165,7 +163,7 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
     ngx_http_mupdf_loc_conf_t *conf = child;
     ngx_conf_merge_str_value(conf->input_type, prev->input_type, "html");
     ngx_conf_merge_str_value(conf->output_type, prev->output_type, "pdf");
-    ngx_conf_merge_str_value(conf->options, prev->options, NULL);
+    ngx_conf_merge_str_value(conf->options, prev->options, "");
     ngx_conf_merge_str_value(conf->range, prev->range, "1-N");
     if (!conf->input_data) conf->input_data = prev->input_data;
     return NGX_CONF_OK;
