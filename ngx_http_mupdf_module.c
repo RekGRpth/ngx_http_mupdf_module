@@ -14,6 +14,14 @@ typedef struct {
 
 ngx_module_t ngx_http_mupdf_module;
 
+/*struct fz_buffer_s {
+    int refs;
+    unsigned char *data;
+    size_t cap, len;
+    int unused_bits;
+    int shared;
+};*/
+
 static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri) {
     fz_page *page = fz_load_page(ctx, doc, number - 1);
     fz_try(ctx) {
@@ -91,11 +99,18 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_caught_message: %s", fz_caught_message(ctx));
         goto fz_drop_context;
     }
+//    const char *output_data = fz_string_from_buffer(ctx, output_buffer);
+//    out.len = ngx_strlen(output_data);
     unsigned char *output_data = NULL;
     out.len = fz_buffer_storage(ctx, output_buffer, &output_data);
+//    unsigned char *output_data = output_buffer->data;
+//    out.len = output_buffer->len;
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "out.len = %ul", out.len);
     if (out.len) out.data = ngx_palloc(r->pool, out.len);
     if (out.data) ngx_memcpy(out.data, output_data, out.len);
-//    fz_save_buffer(ctx, output_buffer, "output_buffer.pdf");
+    fz_buffer *output_buffer1 = fz_new_buffer_from_data(ctx, (unsigned char *)out.data, out.len);
+    fz_save_buffer(ctx, output_buffer1, "output_buffer1.pdf");
+    fz_save_buffer(ctx, output_buffer, "output_buffer.pdf");
 fz_drop_context:
     fz_drop_context(ctx);
     if (out.data) {
