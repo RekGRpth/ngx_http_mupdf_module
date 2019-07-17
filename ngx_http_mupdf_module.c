@@ -77,10 +77,10 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, input_type, output_type, range, options);
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
     if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
-    fz_buffer *output_buffer; fz_var(output_buffer);
-    fz_buffer *input_buffer; fz_var(input_buffer);
-    fz_document *doc; fz_var(doc);
-    fz_document_writer *wri; fz_var(wri);
+    fz_buffer *output_buffer = NULL; fz_var(output_buffer);
+    fz_buffer *input_buffer = NULL; fz_var(input_buffer);
+    fz_document *doc = NULL; fz_var(doc);
+    fz_document_writer *wri = NULL; fz_var(wri);
     fz_try(ctx) {
         fz_register_document_handlers(ctx);
         fz_set_use_document_css(ctx, 1);
@@ -92,10 +92,10 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         wri = fz_new_document_writer(ctx, "buf:", output_type, options);
         runrange(ctx, doc, range, wri);
     } fz_always(ctx) {
-        fz_close_document_writer(ctx, wri);
-        fz_drop_document_writer(ctx, wri);
-        fz_drop_document(ctx, doc);
-        fz_drop_buffer(ctx, input_buffer);
+        if (wri) fz_close_document_writer(ctx, wri);
+        if (wri) fz_drop_document_writer(ctx, wri);
+        if (doc) fz_drop_document(ctx, doc);
+        if (input_buffer) fz_drop_buffer(ctx, input_buffer);
     } fz_catch(ctx) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_caught_message: %s", fz_caught_message(ctx));
         goto fz_drop_context;
