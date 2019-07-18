@@ -14,13 +14,15 @@ typedef struct {
 
 ngx_module_t ngx_http_mupdf_module;
 
-/*struct fz_buffer_s {
-    int refs;
-    unsigned char *data;
-    size_t cap, len;
-    int unused_bits;
-    int shared;
-};*/
+static void pg_mupdf_error_callback(void *user, const char *message) {
+    ngx_log_t *log = user;
+    ngx_log_error(NGX_LOG_ERR, log, 0, message);
+}
+
+static void pg_mupdf_warning_callback(void *user, const char *message) {
+    ngx_log_t *log = user;
+    ngx_log_error(NGX_LOG_WARN, log, 0, message);
+}
 
 static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri) {
     fz_page *page = fz_load_page(ctx, doc, number - 1);
@@ -76,6 +78,8 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     if (ngx_http_complex_value(r, conf->input_data, &input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); goto ret; }
     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, input_type, output_type, range, options);
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
+    fz_set_error_callback(ctx, pg_mupdf_error_callback, r->connection->log);
+    fz_set_warning_callback(ctx, pg_mupdf_warning_callback, r->connection->log);
     if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
     fz_buffer *output_buffer = NULL; fz_var(output_buffer);
     fz_buffer *input_buffer = NULL; fz_var(input_buffer);
@@ -97,7 +101,7 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         if (doc) fz_drop_document(ctx, doc);
         if (input_buffer) fz_drop_buffer(ctx, input_buffer);
     } fz_catch(ctx) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "fz_caught_message: %s", fz_caught_message(ctx));
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, fz_caught_message(ctx));
         goto fz_drop_context;
     }
     unsigned char *output_data = NULL;
