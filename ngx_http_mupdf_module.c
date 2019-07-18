@@ -101,7 +101,7 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         if (doc) fz_drop_document(ctx, doc);
         if (input_buffer) fz_drop_buffer(ctx, input_buffer);
     } fz_catch(ctx) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, fz_caught_message(ctx));
+//        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, fz_caught_message(ctx));
         goto fz_drop_context;
     }
     unsigned char *output_data = NULL;
