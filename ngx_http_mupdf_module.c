@@ -78,9 +78,9 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     if (ngx_http_complex_value(r, conf->input_data, &input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); goto ret; }
     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, input_type, output_type, range, options);
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
+    if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
     fz_set_error_callback(ctx, pg_mupdf_error_callback, r->connection->log);
     fz_set_warning_callback(ctx, pg_mupdf_warning_callback, r->connection->log);
-    if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
     fz_buffer *output_buffer = NULL; fz_var(output_buffer);
     fz_buffer *input_buffer = NULL; fz_var(input_buffer);
     fz_document *doc = NULL; fz_var(doc);
