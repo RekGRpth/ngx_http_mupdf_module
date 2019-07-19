@@ -39,8 +39,7 @@ static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_w
 }
 
 static void runrange(fz_context *ctx, fz_document *doc, const char *range, fz_document_writer *wri) {
-    int start, end, count;
-    count = fz_count_pages(ctx, doc);
+    int start, end, count = fz_count_pages(ctx, doc);
     while ((range = fz_parse_page_range(ctx, range, &start, &end, count))) {
         if (start < end) {
             for (int i = start; i <= end; i++) {
