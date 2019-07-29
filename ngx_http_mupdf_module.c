@@ -80,28 +80,30 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
     fz_set_error_callback(ctx, pg_mupdf_error_callback, r->connection->log);
     fz_set_warning_callback(ctx, pg_mupdf_warning_callback, r->connection->log);
-    fz_buffer *output_buffer = NULL; fz_var(output_buffer);
+    fz_stream *stm = NULL; fz_var(stm);
+    fz_buffer *obuf = NULL; fz_var(obuf);
     fz_document *doc = NULL; fz_var(doc);
     fz_document_writer *wri = NULL; fz_var(wri);
     fz_try(ctx) {
         fz_register_document_handlers(ctx);
         fz_set_use_document_css(ctx, 1);
-        output_buffer = fz_new_buffer(ctx, 0);
-        fz_set_user_context(ctx, output_buffer);
-        fz_stream *input_stream = fz_open_memory(ctx, (unsigned char *)input_data.data, input_data.len);
-        doc = fz_open_document_with_stream(ctx, input_type, input_stream);
+        obuf = fz_new_buffer(ctx, 0);
+        fz_set_user_context(ctx, obuf);
+        stm = fz_open_memory(ctx, (unsigned char *)input_data.data, input_data.len);
+        doc = fz_open_document_with_stream(ctx, input_type, stm);
         wri = fz_new_document_writer(ctx, "buf:", output_type, options);
         runrange(ctx, doc, range, wri);
     } fz_always(ctx) {
         if (wri) fz_close_document_writer(ctx, wri);
         if (wri) fz_drop_document_writer(ctx, wri);
         if (doc) fz_drop_document(ctx, doc);
+        if (stm) fz_drop_stream(ctx, stm);
     } fz_catch(ctx) {
 //        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, fz_caught_message(ctx));
         goto fz_drop_context;
     }
     unsigned char *output_data = NULL;
-    output_len = fz_buffer_storage(ctx, output_buffer, &output_data);
+    output_len = fz_buffer_storage(ctx, obuf, &output_data);
     if (!output_len) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_buffer_storage"); goto fz_drop_context; }
 //    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "output_len = %ul", output_len);
     ngx_buf_t *buf = ngx_create_temp_buf(r->pool, output_len);
