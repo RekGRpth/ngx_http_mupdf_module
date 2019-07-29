@@ -111,6 +111,7 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); goto fz_drop_context; }
     buf->last = ngx_cpymem(buf->last, output_data, output_len);
 fz_drop_context:
+    if (obuf) fz_drop_buffer(ctx, obuf);
     fz_drop_context(ctx);
     if (output_len) {
         buf->last_buf = (r == r->main) ? 1 : 0;
