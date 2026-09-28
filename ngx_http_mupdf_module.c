@@ -16,12 +16,12 @@ ngx_module_t ngx_http_mupdf_module;
 
 static void pg_mupdf_error_callback(void *user, const char *message) {
     ngx_log_t *log = user;
-    ngx_log_error(NGX_LOG_ERR, log, 0, message);
+    ngx_log_error(NGX_LOG_ERR, log, 0, "%s", message);
 }
 
 static void pg_mupdf_warning_callback(void *user, const char *message) {
     ngx_log_t *log = user;
-    ngx_log_error(NGX_LOG_WARN, log, 0, message);
+    ngx_log_error(NGX_LOG_WARN, log, 0, "%s", message);
 }
 
 static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri) {
