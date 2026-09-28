@@ -119,6 +119,11 @@ fz_drop_context:
         ngx_chain_t ch = {.buf = buf, .next = NULL};
         r->headers_out.status = NGX_HTTP_OK;
         r->headers_out.content_length_n = output_len;
+        ngx_str_t exten = r->exten;
+        r->exten = conf->output_type;
+        ngx_int_t ct = ngx_http_set_content_type(r);
+        r->exten = exten;
+        if (ct != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_set_content_type != NGX_OK"); goto ret; }
         rc = ngx_http_send_header(r);
 //        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
         ngx_http_weak_etag(r);
