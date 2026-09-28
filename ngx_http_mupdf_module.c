@@ -25,8 +25,20 @@ typedef struct {
 #endif
 } ngx_http_mupdf_loc_conf_t;
 
+#define NGX_HTTP_MUPDF_MESSAGES 64
+
+typedef struct ngx_http_mupdf_message_s ngx_http_mupdf_message_t;
+
+struct ngx_http_mupdf_message_s {
+    ngx_http_mupdf_message_t *next;
+    ngx_uint_t level;
+    size_t len;
+    u_char data[];
+};
+
 typedef struct {
     fz_context *ctx;
+    ngx_log_t *log;
     char *input_type;
     char *output_type;
     char *options;
@@ -40,6 +52,10 @@ typedef struct {
     ngx_msec_t timeout;
 #if (NGX_THREADS)
     ngx_event_t timer;
+    unsigned thread:1;
+    ngx_http_mupdf_message_t *messages;
+    ngx_http_mupdf_message_t **last;
+    ngx_uint_t nmessages;
 #endif
 } ngx_http_mupdf_task_t;
 
@@ -95,6 +111,34 @@ static void pg_mupdf_warning_callback(void *user, const char *message) {
     ngx_log_error(NGX_LOG_WARN, log, 0, "%s", message);
 }
 
+static void ngx_http_mupdf_message(ngx_http_mupdf_task_t *t, ngx_uint_t level, const char *message) {
+#if (NGX_THREADS)
+    // a thread must not use the request log: keep the messages and log them when the conversion is done
+    if (t->thread) {
+        if (t->nmessages++ >= NGX_HTTP_MUPDF_MESSAGES) return;
+        size_t len = ngx_strlen(message);
+        ngx_http_mupdf_message_t *m = ngx_alloc(sizeof(*m) + len, t->log);
+        if (!m) return;
+        m->next = NULL;
+        m->level = level;
+        m->len = len;
+        ngx_memcpy(m->data, message, len);
+        *t->last = m;
+        t->last = &m->next;
+        return;
+    }
+#endif
+    ngx_log_error(level, t->log, 0, "%s", message);
+}
+
+static void ngx_http_mupdf_error_callback(void *user, const char *message) {
+    ngx_http_mupdf_message(user, NGX_LOG_ERR, message);
+}
+
+static void ngx_http_mupdf_warning_callback(void *user, const char *message) {
+    ngx_http_mupdf_message(user, NGX_LOG_WARN, message);
+}
+
 // monotonic and callable from a thread, unlike ngx_current_msec
 static ngx_msec_t ngx_http_mupdf_now(void) {
     struct timespec ts;
@@ -145,10 +189,11 @@ static void runrange(fz_context *ctx, fz_document *doc, const char *range, fz_do
 
 // runs in a thread pool thread when mupdf_thread_pool is set: must not touch the request or its pool
 static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
+    t->log = log;
     fz_context *ctx = fz_clone_context(t->ctx);
     if (!ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "!fz_clone_context"); return; }
-    fz_set_error_callback(ctx, pg_mupdf_error_callback, log);
-    fz_set_warning_callback(ctx, pg_mupdf_warning_callback, log);
+    fz_set_error_callback(ctx, ngx_http_mupdf_error_callback, t);
+    fz_set_warning_callback(ctx, ngx_http_mupdf_warning_callback, t);
     fz_stream *stm = NULL; fz_var(stm);
     fz_buffer *obuf = NULL; fz_var(obuf);
     fz_document *doc = NULL; fz_var(doc);
@@ -186,6 +231,7 @@ static void ngx_http_mupdf_cleanup(void *data) {
     ngx_http_mupdf_task_t *t = data;
 #if (NGX_THREADS)
     if (t->timer.timer_set) ngx_del_timer(&t->timer);
+    for (ngx_http_mupdf_message_t *m = t->messages, *next; m; m = next) { next = m->next; ngx_free(m); }
 #endif
     if (t->output_data) ngx_free(t->output_data);
 }
@@ -223,6 +269,17 @@ static void ngx_http_mupdf_thread_handler(void *data, ngx_log_t *log) {
     ngx_http_mupdf_convert(data, log);
 }
 
+static void ngx_http_mupdf_log_messages(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
+    for (ngx_http_mupdf_message_t *m = t->messages, *next; m; m = next) {
+        next = m->next;
+        ngx_log_error(m->level, log, 0, "%*s", m->len, m->data);
+        ngx_free(m);
+    }
+    t->messages = NULL;
+    t->last = &t->messages;
+    if (t->nmessages > NGX_HTTP_MUPDF_MESSAGES) ngx_log_error(NGX_LOG_WARN, log, 0, "%ui more mupdf messages dropped", t->nmessages - NGX_HTTP_MUPDF_MESSAGES);
+}
+
 static void ngx_http_mupdf_timer_handler(ngx_event_t *ev) {
     ngx_http_mupdf_task_t *t = ev->data;
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ev->log, 0, "ngx_http_mupdf_timer_handler");
@@ -238,6 +295,7 @@ static void ngx_http_mupdf_thread_event_handler(ngx_event_t *ev) {
     if (t->timer.timer_set) ngx_del_timer(&t->timer);
     r->main->blocked--;
     r->aio = 0;
+    ngx_http_mupdf_log_messages(t, c->log);
     // the request was terminated while converting: let the connection write handler close it
     if (r->main->terminated) { c->write->handler(c->write); return; }
     ngx_http_finalize_request(r, ngx_http_mupdf_send(r, t));
@@ -284,6 +342,8 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
 #if (NGX_THREADS)
     if (task) {
         ngx_http_set_ctx(r, t, ngx_http_mupdf_module);
+        t->thread = 1;
+        t->last = &t->messages;
         task->handler = ngx_http_mupdf_thread_handler;
         task->event.data = r;
         task->event.handler = ngx_http_mupdf_thread_event_handler;

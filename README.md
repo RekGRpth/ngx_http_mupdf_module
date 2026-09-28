@@ -67,7 +67,7 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - **context:** `http`, `server`, `location`
 - Runs conversions in the named nginx [thread pool](https://nginx.org/en/docs/ngx_core_module.html#thread_pool) instead of the worker process, so that a long conversion does not block other requests. The pool named `default` exists without a `thread_pool` directive (32 threads), other names must be defined with one.
 - Without it, the conversion runs inside the worker and blocks it until it finishes.
-- Messages from MuPDF during a conversion in a thread pool are logged without the client and request details.
+- Messages from MuPDF during a conversion in a thread pool are logged when the conversion is done, at most 64 of them per request.
 
 ### mupdf_store_size
 

@@ -25,8 +25,9 @@ add_block_preprocessor(sub {
 
 our $pages = "<p style='page-break-after:always'>page</p>" x 90;
 our $document = '$pages' x 30;
+our $images = join '', map { "<img src='$_'>" } 1 .. 100;
 
-plan tests => repeat_each() * 28;
+plan tests => repeat_each() * 33;
 
 no_shuffle();
 run_tests();
@@ -120,11 +121,30 @@ Content-Length: 0
 --- request
 GET /test
 --- error_code: 500
---- error_log
-unknown output document format: nosuch
+--- error_log eval
+qr/unknown output document format: nosuch, client: \S+, server: \S*, request: "GET \/test HTTP\/1\.1"/
 
 
-=== TEST 7: mupdf_timeout without a thread pool
+=== TEST 7: messages from a thread pool are limited
+--- config eval
+"location /test {
+    mupdf_thread_pool mupdf;
+    mupdf \"$::images\";
+}"
+--- request
+GET /test
+--- error_code: 200
+--- error_log eval
+[
+    qr/cannot load image src='1', client: /,
+    qr/cannot load image src='64', client: /,
+    qr/36 more mupdf messages dropped, client: /,
+]
+--- no_error_log
+cannot load image src='65'
+
+
+=== TEST 8: mupdf_timeout without a thread pool
 --- config eval
 "location /test {
     set \$pages \"$::pages\";
@@ -138,7 +158,7 @@ GET /test
 mupdf_timeout 1 ms exceeded
 
 
-=== TEST 8: mupdf_timeout in a thread pool
+=== TEST 9: mupdf_timeout in a thread pool
 --- config eval
 "location /test {
     set \$pages \"$::pages\";
@@ -155,7 +175,7 @@ mupdf_timeout 1 ms exceeded
 [alert]
 
 
-=== TEST 9: a conversion within mupdf_timeout succeeds
+=== TEST 10: a conversion within mupdf_timeout succeeds
 --- config eval
 "location /test {
     set \$pages \"$::pages\";
