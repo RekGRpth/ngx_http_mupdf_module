@@ -16,6 +16,7 @@ typedef struct {
     ngx_str_t output_type;
     ngx_str_t options;
     ngx_str_t range;
+    ngx_msec_t timeout;
 #if (NGX_THREADS)
     ngx_thread_pool_t *thread_pool;
 #endif
@@ -30,6 +31,12 @@ typedef struct {
     ngx_str_t input_data;
     u_char *output_data;
     size_t output_len;
+    fz_cookie cookie;
+    ngx_msec_t start;
+    ngx_msec_t timeout;
+#if (NGX_THREADS)
+    ngx_event_t timer;
+#endif
 } ngx_http_mupdf_task_t;
 
 ngx_module_t ngx_http_mupdf_module;
@@ -61,12 +68,27 @@ static void pg_mupdf_warning_callback(void *user, const char *message) {
     ngx_log_error(NGX_LOG_WARN, log, 0, "%s", message);
 }
 
-static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri) {
+// monotonic and callable from a thread, unlike ngx_current_msec
+static ngx_msec_t ngx_http_mupdf_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (ngx_msec_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// mupdf can only be interrupted between pages, and inside a page only for formats that honour cookie->abort (e.g. pdf, not html)
+static void ngx_http_mupdf_check_timeout(fz_context *ctx, ngx_http_mupdf_task_t *t) {
+    if (!t->timeout) return;
+    if (!t->cookie.abort && ngx_http_mupdf_now() - t->start < t->timeout) return;
+    t->cookie.abort = 1;
+    fz_throw(ctx, FZ_ERROR_LIMIT, "mupdf_timeout %lu ms exceeded", (unsigned long) t->timeout);
+}
+
+static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_writer *wri, fz_cookie *cookie) {
     fz_page *page = fz_load_page(ctx, doc, number - 1);
     fz_try(ctx) {
         fz_rect mediabox = fz_bound_page(ctx, page);
         fz_device *dev = fz_begin_page(ctx, wri, mediabox);
-        fz_run_page(ctx, page, dev, fz_identity, NULL);
+        fz_run_page(ctx, page, dev, fz_identity, cookie);
         fz_end_page(ctx, wri);
     } fz_always(ctx) {
         fz_drop_page(ctx, page);
@@ -75,19 +97,23 @@ static void runpage(fz_context *ctx, fz_document *doc, int number, fz_document_w
     }
 }
 
-static void runrange(fz_context *ctx, fz_document *doc, const char *range, fz_document_writer *wri) {
+static void runrange(fz_context *ctx, fz_document *doc, const char *range, fz_document_writer *wri, ngx_http_mupdf_task_t *t) {
     int start, end, count = fz_count_pages(ctx, doc);
     while ((range = fz_parse_page_range(ctx, range, &start, &end, count))) {
         if (start < end) {
             for (int i = start; i <= end; i++) {
-                runpage(ctx, doc, i, wri);
+                ngx_http_mupdf_check_timeout(ctx, t);
+                runpage(ctx, doc, i, wri, &t->cookie);
             }
         } else {
             for (int i = start; i >= end; i--) {
-                runpage(ctx, doc, i, wri);
+                ngx_http_mupdf_check_timeout(ctx, t);
+                runpage(ctx, doc, i, wri, &t->cookie);
             }
         }
     }
+    // an aborted page is silently cut short: fail instead of returning a truncated document
+    ngx_http_mupdf_check_timeout(ctx, t);
 }
 
 // runs in a thread pool thread when mupdf_thread_pool is set: must not touch the request or its pool
@@ -105,7 +131,7 @@ static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
         stm = fz_open_memory(ctx, (unsigned char *)t->input_data.data, t->input_data.len);
         doc = fz_open_document_with_stream(ctx, t->input_type, stm);
         wri = fz_new_document_writer_with_buffer(ctx, obuf, t->output_type, t->options);
-        runrange(ctx, doc, t->range, wri);
+        runrange(ctx, doc, t->range, wri, t);
         fz_close_document_writer(ctx, wri);
     } fz_always(ctx) {
         if (wri) fz_drop_document_writer(ctx, wri);
@@ -128,6 +154,9 @@ fz_drop_context:
 
 static void ngx_http_mupdf_cleanup(void *data) {
     ngx_http_mupdf_task_t *t = data;
+#if (NGX_THREADS)
+    if (t->timer.timer_set) ngx_del_timer(&t->timer);
+#endif
     if (t->output_data) ngx_free(t->output_data);
 }
 
@@ -160,16 +189,24 @@ static void ngx_http_mupdf_thread_handler(void *data, ngx_log_t *log) {
     ngx_http_mupdf_convert(data, log);
 }
 
+static void ngx_http_mupdf_timer_handler(ngx_event_t *ev) {
+    ngx_http_mupdf_task_t *t = ev->data;
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ev->log, 0, "ngx_http_mupdf_timer_handler");
+    t->cookie.abort = 1;
+}
+
 static void ngx_http_mupdf_thread_event_handler(ngx_event_t *ev) {
     ngx_http_request_t *r = ev->data;
     ngx_connection_t *c = r->connection;
     ngx_http_set_log_request(c->log, r);
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_mupdf_thread_event_handler");
+    ngx_http_mupdf_task_t *t = ngx_http_get_module_ctx(r, ngx_http_mupdf_module);
+    if (t->timer.timer_set) ngx_del_timer(&t->timer);
     r->main->blocked--;
     r->aio = 0;
     // the request was terminated while converting: let the connection write handler close it
     if (r->main->terminated) { c->write->handler(c->write); return; }
-    ngx_http_finalize_request(r, ngx_http_mupdf_send(r, ngx_http_get_module_ctx(r, ngx_http_mupdf_module)));
+    ngx_http_finalize_request(r, ngx_http_mupdf_send(r, t));
     ngx_http_run_posted_requests(c);
 }
 #endif
@@ -202,6 +239,8 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     cln->handler = ngx_http_mupdf_cleanup;
     cln->data = t;
     t->ctx = mcf->ctx;
+    t->start = ngx_http_mupdf_now();
+    t->timeout = conf->timeout;
     if (!(t->input_type = ngx_http_mupdf_str(r->pool, &conf->input_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
     if (!(t->output_type = ngx_http_mupdf_str(r->pool, &conf->output_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!output_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
     if (!(t->options = ngx_http_mupdf_str(r->pool, &conf->options))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!options"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
@@ -215,6 +254,12 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         task->event.data = r;
         task->event.handler = ngx_http_mupdf_thread_event_handler;
         if (ngx_thread_task_post(conf->thread_pool, task) != NGX_OK) return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        if (t->timeout) {
+            t->timer.handler = ngx_http_mupdf_timer_handler;
+            t->timer.data = t;
+            t->timer.log = r->connection->log;
+            ngx_add_timer(&t->timer, t->timeout);
+        }
         r->main->blocked++;
         r->aio = 1;
         r->main->count++;
@@ -272,6 +317,12 @@ static ngx_command_t ngx_http_mupdf_commands[] = {
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, range),
     .post = NULL },
+  { .name = ngx_string("mupdf_timeout"),
+    .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+    .set = ngx_conf_set_msec_slot,
+    .conf = NGX_HTTP_LOC_CONF_OFFSET,
+    .offset = offsetof(ngx_http_mupdf_loc_conf_t, timeout),
+    .post = NULL },
   { .name = ngx_string("mupdf_store_size"),
     .type = NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
     .set = ngx_conf_set_size_slot,
@@ -309,6 +360,7 @@ static char *ngx_http_mupdf_init_main_conf(ngx_conf_t *cf, void *conf) {
 static void *ngx_http_mupdf_create_loc_conf(ngx_conf_t *cf) {
     ngx_http_mupdf_loc_conf_t *conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mupdf_loc_conf_t));
     if (!conf) return NULL;
+    conf->timeout = NGX_CONF_UNSET_MSEC;
 #if (NGX_THREADS)
     conf->thread_pool = NGX_CONF_UNSET_PTR;
 #endif
@@ -323,6 +375,7 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
     ngx_conf_merge_str_value(conf->options, prev->options, "");
     ngx_conf_merge_str_value(conf->range, prev->range, "1-N");
     if (!conf->input_data) conf->input_data = prev->input_data;
+    ngx_conf_merge_msec_value(conf->timeout, prev->timeout, 0);
 #if (NGX_THREADS)
     ngx_conf_merge_ptr_value(conf->thread_pool, prev->thread_pool, NULL);
 #endif
