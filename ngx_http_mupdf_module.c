@@ -5,14 +5,51 @@
 #include <mupdf/fitz.h>
 
 typedef struct {
+    fz_context *ctx;
+    ngx_flag_t enable;
+    size_t store_size;
+} ngx_http_mupdf_main_conf_t;
+
+typedef struct {
     ngx_http_complex_value_t *input_data;
     ngx_str_t input_type;
     ngx_str_t output_type;
     ngx_str_t options;
     ngx_str_t range;
+#if (NGX_THREADS)
+    ngx_thread_pool_t *thread_pool;
+#endif
 } ngx_http_mupdf_loc_conf_t;
 
+typedef struct {
+    fz_context *ctx;
+    char *input_type;
+    char *output_type;
+    char *options;
+    char *range;
+    ngx_str_t input_data;
+    u_char *output_data;
+    size_t output_len;
+} ngx_http_mupdf_task_t;
+
 ngx_module_t ngx_http_mupdf_module;
+
+#if (NGX_THREADS)
+static ngx_thread_mutex_t ngx_http_mupdf_mutex[FZ_LOCK_MAX];
+
+static void ngx_http_mupdf_lock(void *user, int lock) {
+    ngx_thread_mutex_lock(&ngx_http_mupdf_mutex[lock], ngx_cycle->log);
+}
+
+static void ngx_http_mupdf_unlock(void *user, int lock) {
+    ngx_thread_mutex_unlock(&ngx_http_mupdf_mutex[lock], ngx_cycle->log);
+}
+#else
+// fz_clone_context() refuses a context without lock functions, a worker without threads needs no real locking
+static void ngx_http_mupdf_lock(void *user, int lock) { }
+
+static void ngx_http_mupdf_unlock(void *user, int lock) { }
+#endif
 
 static void pg_mupdf_error_callback(void *user, const char *message) {
     ngx_log_t *log = user;
@@ -53,46 +90,23 @@ static void runrange(fz_context *ctx, fz_document *doc, const char *range, fz_do
     }
 }
 
-static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_mupdf_handler");
-    if (!(r->method & NGX_HTTP_GET)) return NGX_HTTP_NOT_ALLOWED;
-    ngx_int_t rc = ngx_http_discard_request_body(r);
-    if (rc != NGX_OK && rc != NGX_AGAIN) return rc;
-    ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
-    rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-    char *input_type = ngx_pcalloc(r->pool, conf->input_type.len + 1);
-    if (!input_type) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); goto ret; }
-    ngx_memcpy(input_type, conf->input_type.data, conf->input_type.len);
-    char *output_type = ngx_pcalloc(r->pool, conf->output_type.len + 1);
-    if (!output_type) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!output_type"); goto ret; }
-    ngx_memcpy(output_type, conf->output_type.data, conf->output_type.len);
-    char *options = ngx_pcalloc(r->pool, conf->options.len + 1);
-    if (!options) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!options"); goto ret; }
-    ngx_memcpy(options, conf->options.data, conf->options.len);
-    char *range = ngx_pcalloc(r->pool, conf->range.len + 1);
-    if (!range) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!range"); goto ret; }
-    ngx_memcpy(range, conf->range.data, conf->range.len);
-    ngx_str_t input_data;
-    size_t output_len = 0;
-    if (ngx_http_complex_value(r, conf->input_data, &input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); goto ret; }
-    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &input_data, input_type, output_type, range, options);
-    fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
-    if (!ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_new_context"); goto ret; }
-    fz_set_error_callback(ctx, pg_mupdf_error_callback, r->connection->log);
-    fz_set_warning_callback(ctx, pg_mupdf_warning_callback, r->connection->log);
+// runs in a thread pool thread when mupdf_thread_pool is set: must not touch the request or its pool
+static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
+    fz_context *ctx = fz_clone_context(t->ctx);
+    if (!ctx) { ngx_log_error(NGX_LOG_ERR, log, 0, "!fz_clone_context"); return; }
+    fz_set_error_callback(ctx, pg_mupdf_error_callback, log);
+    fz_set_warning_callback(ctx, pg_mupdf_warning_callback, log);
     fz_stream *stm = NULL; fz_var(stm);
     fz_buffer *obuf = NULL; fz_var(obuf);
     fz_document *doc = NULL; fz_var(doc);
     fz_document_writer *wri = NULL; fz_var(wri);
     fz_try(ctx) {
-        fz_register_document_handlers(ctx);
-        fz_set_use_document_css(ctx, 1);
         obuf = fz_new_buffer(ctx, 0);
         fz_set_user_context(ctx, obuf);
-        stm = fz_open_memory(ctx, (unsigned char *)input_data.data, input_data.len);
-        doc = fz_open_document_with_stream(ctx, input_type, stm);
-        wri = fz_new_document_writer(ctx, "buf:", output_type, options);
-        runrange(ctx, doc, range, wri);
+        stm = fz_open_memory(ctx, (unsigned char *)t->input_data.data, t->input_data.len);
+        doc = fz_open_document_with_stream(ctx, t->input_type, stm);
+        wri = fz_new_document_writer(ctx, "buf:", t->output_type, t->options);
+        runrange(ctx, doc, t->range, wri);
         fz_close_document_writer(ctx, wri);
     } fz_always(ctx) {
         if (wri) fz_drop_document_writer(ctx, wri);
@@ -103,39 +117,135 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         goto fz_drop_context;
     }
     unsigned char *output_data = NULL;
-    output_len = fz_buffer_storage(ctx, obuf, &output_data);
-    if (!output_len) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!fz_buffer_storage"); goto fz_drop_context; }
-//    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "output_len = %ul", output_len);
-    ngx_buf_t *buf = ngx_create_temp_buf(r->pool, output_len);
-    fz_var(buf);
-    if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); output_len = 0; goto fz_drop_context; }
-    buf->last = ngx_cpymem(buf->last, output_data, output_len);
+    size_t output_len = fz_buffer_storage(ctx, obuf, &output_data);
+    if (!output_len) { ngx_log_error(NGX_LOG_ERR, log, 0, "!fz_buffer_storage"); goto fz_drop_context; }
+    if (!(t->output_data = ngx_alloc(output_len, log))) goto fz_drop_context;
+    ngx_memcpy(t->output_data, output_data, output_len);
+    t->output_len = output_len;
 fz_drop_context:
     if (obuf) fz_drop_buffer(ctx, obuf);
     fz_drop_context(ctx);
-    if (output_len) {
-        buf->last_buf = (r == r->main) ? 1 : 0;
-        buf->last_in_chain = 1;
-        ngx_chain_t ch = {.buf = buf, .next = NULL};
-        r->headers_out.status = NGX_HTTP_OK;
-        r->headers_out.content_length_n = output_len;
-        ngx_str_t exten = r->exten;
-        r->exten = conf->output_type;
-        ngx_int_t ct = ngx_http_set_content_type(r);
-        r->exten = exten;
-        if (ct != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_set_content_type != NGX_OK"); goto ret; }
-        rc = ngx_http_send_header(r);
-//        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
-        if (rc == NGX_ERROR || rc > NGX_OK || r->header_only); else rc = ngx_http_output_filter(r, &ch);
+}
+
+static void ngx_http_mupdf_cleanup(void *data) {
+    ngx_http_mupdf_task_t *t = data;
+    if (t->output_data) ngx_free(t->output_data);
+}
+
+static ngx_int_t ngx_http_mupdf_send(ngx_http_request_t *r, ngx_http_mupdf_task_t *t) {
+    if (!t->output_len) return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
+    ngx_buf_t *buf = ngx_calloc_buf(r->pool);
+    if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    buf->pos = t->output_data;
+    buf->last = t->output_data + t->output_len;
+    buf->memory = 1;
+    buf->last_buf = (r == r->main) ? 1 : 0;
+    buf->last_in_chain = 1;
+    ngx_chain_t ch = {.buf = buf, .next = NULL};
+    r->headers_out.status = NGX_HTTP_OK;
+    r->headers_out.content_length_n = t->output_len;
+    ngx_str_t exten = r->exten;
+    r->exten = conf->output_type;
+    ngx_int_t rc = ngx_http_set_content_type(r);
+    r->exten = exten;
+    if (rc != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_set_content_type != NGX_OK"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    rc = ngx_http_send_header(r);
+//    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) return rc;
+    return ngx_http_output_filter(r, &ch);
+}
+
+#if (NGX_THREADS)
+static void ngx_http_mupdf_thread_handler(void *data, ngx_log_t *log) {
+    ngx_http_mupdf_convert(data, log);
+}
+
+static void ngx_http_mupdf_thread_event_handler(ngx_event_t *ev) {
+    ngx_http_request_t *r = ev->data;
+    ngx_connection_t *c = r->connection;
+    ngx_http_set_log_request(c->log, r);
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_mupdf_thread_event_handler");
+    r->main->blocked--;
+    r->aio = 0;
+    // the request was terminated while converting: let the connection write handler close it
+    if (r->main->terminated) { c->write->handler(c->write); return; }
+    ngx_http_finalize_request(r, ngx_http_mupdf_send(r, ngx_http_get_module_ctx(r, ngx_http_mupdf_module)));
+    ngx_http_run_posted_requests(c);
+}
+#endif
+
+static char *ngx_http_mupdf_str(ngx_pool_t *pool, ngx_str_t *str) {
+    char *s = ngx_pcalloc(pool, str->len + 1);
+    if (s) ngx_memcpy(s, str->data, str->len);
+    return s;
+}
+
+static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_mupdf_handler");
+    if (!(r->method & NGX_HTTP_GET)) return NGX_HTTP_NOT_ALLOWED;
+    ngx_int_t rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK && rc != NGX_AGAIN) return rc;
+    ngx_http_mupdf_main_conf_t *mcf = ngx_http_get_module_main_conf(r, ngx_http_mupdf_module);
+    if (!mcf->ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!mcf->ctx"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
+    ngx_http_mupdf_task_t *t;
+#if (NGX_THREADS)
+    ngx_thread_task_t *task = NULL;
+    if (conf->thread_pool) {
+        if (!(task = ngx_thread_task_alloc(r->pool, sizeof(*t)))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!ngx_thread_task_alloc"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+        t = task->ctx;
+    } else
+#endif
+    if (!(t = ngx_pcalloc(r->pool, sizeof(*t)))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!ngx_pcalloc"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    ngx_pool_cleanup_t *cln = ngx_pool_cleanup_add(r->pool, 0);
+    if (!cln) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!ngx_pool_cleanup_add"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    cln->handler = ngx_http_mupdf_cleanup;
+    cln->data = t;
+    t->ctx = mcf->ctx;
+    if (!(t->input_type = ngx_http_mupdf_str(r->pool, &conf->input_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->output_type = ngx_http_mupdf_str(r->pool, &conf->output_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!output_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->options = ngx_http_mupdf_str(r->pool, &conf->options))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!options"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->range = ngx_http_mupdf_str(r->pool, &conf->range))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!range"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (ngx_http_complex_value(r, conf->input_data, &t->input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &t->input_data, t->input_type, t->output_type, t->range, t->options);
+#if (NGX_THREADS)
+    if (task) {
+        ngx_http_set_ctx(r, t, ngx_http_mupdf_module);
+        task->handler = ngx_http_mupdf_thread_handler;
+        task->event.data = r;
+        task->event.handler = ngx_http_mupdf_thread_event_handler;
+        if (ngx_thread_task_post(conf->thread_pool, task) != NGX_OK) return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        r->main->blocked++;
+        r->aio = 1;
+        r->main->count++;
+        return NGX_DONE;
     }
-ret:
-    return rc;
+#endif
+    ngx_http_mupdf_convert(t, r->connection->log);
+    return ngx_http_mupdf_send(r, t);
 }
 
 static char *ngx_http_mupdf_convert_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_core_loc_conf_t *clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_mupdf_handler;
+    ngx_http_mupdf_main_conf_t *mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_mupdf_module);
+    mcf->enable = 1;
     return ngx_http_set_complex_value_slot(cf, cmd, conf);
+}
+
+static char *ngx_http_mupdf_thread_pool_set(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+#if (NGX_THREADS)
+    ngx_http_mupdf_loc_conf_t *mlcf = conf;
+    if (mlcf->thread_pool != NGX_CONF_UNSET_PTR) return "is duplicate";
+    ngx_str_t *value = cf->args->elts;
+    if (value[1].len == sizeof("off") - 1 && !ngx_strncmp(value[1].data, "off", sizeof("off") - 1)) { mlcf->thread_pool = NULL; return NGX_CONF_OK; }
+    if (!(mlcf->thread_pool = ngx_thread_pool_add(cf, &value[1]))) return NGX_CONF_ERROR;
+    return NGX_CONF_OK;
+#else
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "\"%V\" requires nginx built --with-threads", &cmd->name);
+    return NGX_CONF_ERROR;
+#endif
 }
 
 static ngx_command_t ngx_http_mupdf_commands[] = {
@@ -163,6 +273,18 @@ static ngx_command_t ngx_http_mupdf_commands[] = {
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, range),
     .post = NULL },
+  { .name = ngx_string("mupdf_store_size"),
+    .type = NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+    .set = ngx_conf_set_size_slot,
+    .conf = NGX_HTTP_MAIN_CONF_OFFSET,
+    .offset = offsetof(ngx_http_mupdf_main_conf_t, store_size),
+    .post = NULL },
+  { .name = ngx_string("mupdf_thread_pool"),
+    .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+    .set = ngx_http_mupdf_thread_pool_set,
+    .conf = NGX_HTTP_LOC_CONF_OFFSET,
+    .offset = 0,
+    .post = NULL },
   { .name = ngx_string("mupdf"),
     .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
     .set = ngx_http_mupdf_convert_set,
@@ -172,9 +294,25 @@ static ngx_command_t ngx_http_mupdf_commands[] = {
     ngx_null_command
 };
 
+static void *ngx_http_mupdf_create_main_conf(ngx_conf_t *cf) {
+    ngx_http_mupdf_main_conf_t *conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mupdf_main_conf_t));
+    if (!conf) return NULL;
+    conf->store_size = NGX_CONF_UNSET_SIZE;
+    return conf;
+}
+
+static char *ngx_http_mupdf_init_main_conf(ngx_conf_t *cf, void *conf) {
+    ngx_http_mupdf_main_conf_t *mcf = conf;
+    ngx_conf_init_size_value(mcf->store_size, FZ_STORE_DEFAULT);
+    return NGX_CONF_OK;
+}
+
 static void *ngx_http_mupdf_create_loc_conf(ngx_conf_t *cf) {
     ngx_http_mupdf_loc_conf_t *conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_mupdf_loc_conf_t));
-    if (!conf) return NGX_CONF_ERROR;
+    if (!conf) return NULL;
+#if (NGX_THREADS)
+    conf->thread_pool = NGX_CONF_UNSET_PTR;
+#endif
     return conf;
 }
 
@@ -186,14 +324,51 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
     ngx_conf_merge_str_value(conf->options, prev->options, "");
     ngx_conf_merge_str_value(conf->range, prev->range, "1-N");
     if (!conf->input_data) conf->input_data = prev->input_data;
+#if (NGX_THREADS)
+    ngx_conf_merge_ptr_value(conf->thread_pool, prev->thread_pool, NULL);
+#endif
     return NGX_CONF_OK;
+}
+
+static ngx_int_t ngx_http_mupdf_init_process(ngx_cycle_t *cycle) {
+    ngx_http_mupdf_main_conf_t *mcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_mupdf_module);
+    if (!mcf || !mcf->enable) return NGX_OK;
+#if (NGX_THREADS)
+    for (ngx_uint_t i = 0; i < FZ_LOCK_MAX; i++) if (ngx_thread_mutex_create(&ngx_http_mupdf_mutex[i], cycle->log) != NGX_OK) return NGX_ERROR;
+#endif
+    fz_locks_context locks = {.user = NULL, .lock = ngx_http_mupdf_lock, .unlock = ngx_http_mupdf_unlock};
+    // shared by all requests of the worker: document handlers are registered and the store is limited once
+    fz_context *ctx = fz_new_context(NULL, &locks, mcf->store_size);
+    if (!ctx) { ngx_log_error(NGX_LOG_ERR, cycle->log, 0, "!fz_new_context"); return NGX_OK; }
+    fz_set_error_callback(ctx, pg_mupdf_error_callback, cycle->log);
+    fz_set_warning_callback(ctx, pg_mupdf_warning_callback, cycle->log);
+    int error = 0;
+    fz_try(ctx) {
+        fz_register_document_handlers(ctx);
+        fz_set_use_document_css(ctx, 1);
+    } fz_catch(ctx) {
+        error = 1;
+    }
+    if (error) { fz_drop_context(ctx); return NGX_OK; }
+    mcf->ctx = ctx;
+    return NGX_OK;
+}
+
+static void ngx_http_mupdf_exit_process(ngx_cycle_t *cycle) {
+    ngx_http_mupdf_main_conf_t *mcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_mupdf_module);
+    if (!mcf || !mcf->enable) return;
+    if (mcf->ctx) fz_drop_context(mcf->ctx);
+    mcf->ctx = NULL;
+#if (NGX_THREADS)
+    for (ngx_uint_t i = 0; i < FZ_LOCK_MAX; i++) ngx_thread_mutex_destroy(&ngx_http_mupdf_mutex[i], cycle->log);
+#endif
 }
 
 static ngx_http_module_t ngx_http_mupdf_module_ctx = {
     .preconfiguration = NULL,
     .postconfiguration = NULL,
-    .create_main_conf = NULL,
-    .init_main_conf = NULL,
+    .create_main_conf = ngx_http_mupdf_create_main_conf,
+    .init_main_conf = ngx_http_mupdf_init_main_conf,
     .create_srv_conf = NULL,
     .merge_srv_conf = NULL,
     .create_loc_conf = ngx_http_mupdf_create_loc_conf,
@@ -207,10 +382,10 @@ ngx_module_t ngx_http_mupdf_module = {
     .type = NGX_HTTP_MODULE,
     .init_master = NULL,
     .init_module = NULL,
-    .init_process = NULL,
+    .init_process = ngx_http_mupdf_init_process,
     .init_thread = NULL,
     .exit_thread = NULL,
-    .exit_process = NULL,
+    .exit_process = ngx_http_mupdf_exit_process,
     .exit_master = NULL,
     NGX_MODULE_V1_PADDING
 };
