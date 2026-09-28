@@ -17,6 +17,13 @@ if [ $ngx_found = no ] && pkg-config --exists mupdf 2>/dev/null; then
 fi
 
 if [ $ngx_found = no ]; then
+    ngx_feature="mupdf shared library"
+    ngx_feature_path=
+    ngx_feature_libs="-lmupdf"
+    . auto/feature
+fi
+
+if [ $ngx_found = no ]; then
     cat << END
 
 $0: error: the ngx_http_mupdf_module requires the mupdf library.
