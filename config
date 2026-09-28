@@ -1,15 +1,42 @@
 ngx_addon_name=ngx_http_mupdf_module
+
+ngx_feature="mupdf library"
+ngx_feature_name=
+ngx_feature_run=no
+ngx_feature_incs="#include <mupdf/fitz.h>"
+ngx_feature_path=
+ngx_feature_libs="-lmupdf -lmupdfthird -lfreetype -lharfbuzz -ljpeg -ljbig2dec -lopenjp2"
+ngx_feature_test="fz_drop_context(fz_new_context(NULL, NULL, FZ_STORE_DEFAULT))"
+. auto/feature
+
+if [ $ngx_found = no ] && pkg-config --exists mupdf 2>/dev/null; then
+    ngx_feature="mupdf library via pkg-config"
+    ngx_feature_path="`pkg-config --cflags-only-I mupdf | sed -e 's/-I//g'`"
+    ngx_feature_libs="`pkg-config --libs mupdf`"
+    . auto/feature
+fi
+
+if [ $ngx_found = no ]; then
+    cat << END
+
+$0: error: the ngx_http_mupdf_module requires the mupdf library.
+
+END
+    exit 1
+fi
+
 if test -n "$ngx_module_link"; then
     ngx_module_type=HTTP
     ngx_module_name=$ngx_addon_name
-    ngx_module_incs=
+    ngx_module_incs="$ngx_feature_path"
     ngx_module_deps=
     ngx_module_srcs="$ngx_addon_dir/ngx_http_mupdf_module.c"
-    ngx_module_libs="-lmupdf -lmupdfthird -lfreetype -lharfbuzz -ljpeg -ljbig2dec -lopenjp2"
+    ngx_module_libs="$ngx_feature_libs"
 
     . auto/module
 else
 HTTP_MODULES="$HTTP_MODULES $ngx_addon_name"
 NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_mupdf_module.c"
-CORE_LIBS="$CORE_LIBS -lmupdf -lmupdfthird -lfreetype -lharfbuzz -ljpeg -ljbig2dec -lopenjp2"
+CORE_INCS="$CORE_INCS $ngx_feature_path"
+CORE_LIBS="$CORE_LIBS $ngx_feature_libs"
 fi
