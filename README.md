@@ -23,7 +23,7 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - `mupdf;` without arguments converts the response of the location as a filter, whatever produces it. Nested locations inherit it, except those with their own `mupdf <text>;`.
   - Only `200` responses are converted, others such as error pages are passed through. Compressed responses (with a `Content-Encoding`, e.g. from a backend or `gzip_static`) are passed through too: to convert a backend response, do not let it be compressed, e.g. with `proxy_set_header Accept-Encoding "";`.
   - Without `mupdf_input_type`, the input type is the response `Content-Type`, and responses whose type MuPDF cannot read (e.g. `text/css`) are passed through unchanged. With `mupdf_input_type`, every response is converted as that type.
-  - The whole response is collected in memory before the conversion, and its `Content-Length`, `ETag` and `Accept-Ranges` are replaced.
+  - The whole response is collected in memory before the conversion, and its `Content-Length`, `ETag` and `Accept-Ranges` are replaced. Limit its size with `mupdf_filter_max_size`.
   - A `HEAD` request has no body to convert: it gets the `Content-Type` of the converted response without a `Content-Length`.
   - A conversion error is a `500` response. `mupdf_thread_pool` and `mupdf_timeout` apply as in the content handler.
 
@@ -74,6 +74,13 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - Runs conversions in the named nginx [thread pool](https://nginx.org/en/docs/ngx_core_module.html#thread_pool) instead of the worker process, so that a long conversion does not block other requests. The pool named `default` exists without a `thread_pool` directive (32 threads), other names must be defined with one.
 - Without it, the conversion runs inside the worker and blocks it until it finishes.
 - Messages from MuPDF during a conversion in a thread pool are logged when the conversion is done, at most 64 of them per request.
+
+### mupdf_filter_max_size
+
+- **syntax:** `mupdf_filter_max_size <size>;`
+- **default:** `0` (no limit)
+- **context:** `http`, `server`, `location`
+- The largest response that `mupdf;` collects for conversion. A longer response fails with `500` and `mupdf_filter_max_size ... exceeded` is logged: at once when its `Content-Length` is known, otherwise as soon as the collected body exceeds the limit.
 
 ### mupdf_store_size
 
@@ -150,4 +157,4 @@ map $arg_format $mupdf_format {
 
 MuPDF opens the document from memory, so HTML input cannot load local files through `<img>`, `<link>` or `file://` URLs.
 
-The whole input and output documents are held in memory for the duration of the request. In filter mode this includes the response being converted, however large it is, so limit what the location can serve.
+The whole input and output documents are held in memory for the duration of the request. In filter mode this includes the response being converted, so set `mupdf_filter_max_size`.

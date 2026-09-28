@@ -22,7 +22,7 @@ add_block_preprocessor(sub {
 
 our $big = join '', map { "<p>line $_</p>\n" } 1 .. 20000;
 
-plan tests => repeat_each() * 70;
+plan tests => repeat_each() * 79;
 
 no_shuffle();
 run_tests();
@@ -392,5 +392,63 @@ Content-Encoding:
 Content-Type: text/plain
 --- response_body_like eval
 qr/\AHello from backend\s*\z/
+--- no_error_log
+[error]
+
+
+=== TEST 19: a response longer than mupdf_filter_max_size is rejected before reading it
+--- config
+    location /doc/ {
+        mupdf_filter_max_size 1k;
+        mupdf;
+    }
+--- user_files eval
+">>> doc/big.html\n$::big"
+--- request
+GET /doc/big.html
+--- error_code: 500
+--- error_log eval
+qr/mupdf_filter_max_size 1024 exceeded by a response of \d+ bytes/
+--- no_error_log
+[alert]
+
+
+=== TEST 20: a response of unknown length is rejected when it exceeds mupdf_filter_max_size
+--- config
+    location /backend/ {
+        ssi on;
+    }
+    location /test {
+        mupdf_thread_pool mupdf;
+        mupdf_filter_max_size 1k;
+        mupdf;
+        proxy_http_version 1.1;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/backend/big.html;
+    }
+--- user_files eval
+">>> backend/big.html\n$::big"
+--- request
+GET /test
+--- error_code: 500
+--- error_log eval
+qr/mupdf_filter_max_size 1024 exceeded(?! by)/
+--- no_error_log
+[alert]
+
+
+=== TEST 21: a response within mupdf_filter_max_size is converted
+--- config
+    location /doc/ {
+        mupdf_filter_max_size 1k;
+        mupdf;
+    }
+--- user_files
+>>> doc/a.html
+<h1>Hello, world!</h1>
+--- request
+GET /doc/a.html
+--- error_code: 200
+--- response_headers
+Content-Type: application/pdf
 --- no_error_log
 [error]

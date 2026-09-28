@@ -23,6 +23,7 @@ typedef struct {
     ngx_str_t content_type;
     ngx_msec_t timeout;
     ngx_uint_t filter;
+    size_t filter_max_size;
 #if (NGX_THREADS)
     ngx_thread_pool_t *thread_pool;
 #endif
@@ -546,6 +547,7 @@ static ngx_int_t ngx_http_mupdf_header_filter(ngx_http_request_t *r) {
     ngx_http_clear_accept_ranges(r);
     ngx_http_clear_etag(r);
     // header_only is only set for HEAD by the last header filter
+    if (conf->filter_max_size && length > (off_t) conf->filter_max_size) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "mupdf_filter_max_size %uz exceeded by a response of %O bytes", conf->filter_max_size, length); return ngx_http_filter_finalize_request(r, &ngx_http_mupdf_module, NGX_HTTP_INTERNAL_SERVER_ERROR); }
     if (r->header_only || r->method == NGX_HTTP_HEAD) {
         // there is no body to convert: send the type of the converted response
         char *output_type = ngx_http_mupdf_value(r, conf->output_type);
@@ -571,12 +573,15 @@ static ngx_int_t ngx_http_mupdf_body_filter(ngx_http_request_t *r, ngx_chain_t *
     if (!ctx || !ctx->filter || ctx->state == NGX_HTTP_MUPDF_PASS) return ngx_http_next_body_filter(r, in);
     if (ctx->state == NGX_HTTP_MUPDF_CONVERT) return NGX_AGAIN;
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_mupdf_body_filter");
+    ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
     ngx_uint_t last = 0;
     for (ngx_chain_t *cl = in; cl; cl = cl->next) {
         ngx_buf_t *b = cl->buf;
         if (b->last_buf || (r != r->main && b->last_in_chain)) last = 1;
         size_t size = ngx_buf_in_memory(b) ? (size_t) (b->last - b->pos) : 0;
         if (size) {
+            // a response without a known length
+            if (conf->filter_max_size && ctx->len + size > conf->filter_max_size) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "mupdf_filter_max_size %uz exceeded", conf->filter_max_size); ctx->state = NGX_HTTP_MUPDF_PASS; return ngx_http_filter_finalize_request(r, &ngx_http_mupdf_module, NGX_HTTP_INTERNAL_SERVER_ERROR); }
             if (ctx->len + size > ctx->size) {
                 size_t n = ngx_max(ctx->size * 2, ctx->len + size);
                 u_char *data = ngx_pnalloc(r->pool, n);
@@ -597,7 +602,6 @@ static ngx_int_t ngx_http_mupdf_body_filter(ngx_http_request_t *r, ngx_chain_t *
     t->input_data.data = ctx->data;
     t->input_data.len = ctx->len;
     if (!(t->input_type = ctx->input_type)) {
-        ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
         if (!(t->input_type = ngx_http_mupdf_value(r, conf->input_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); ctx->state = NGX_HTTP_MUPDF_PASS; return ngx_http_filter_finalize_request(r, &ngx_http_mupdf_module, NGX_HTTP_INTERNAL_SERVER_ERROR); }
     }
     ctx->state = NGX_HTTP_MUPDF_CONVERT;
@@ -676,6 +680,12 @@ static ngx_command_t ngx_http_mupdf_commands[] = {
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, timeout),
     .post = NULL },
+  { .name = ngx_string("mupdf_filter_max_size"),
+    .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+    .set = ngx_conf_set_size_slot,
+    .conf = NGX_HTTP_LOC_CONF_OFFSET,
+    .offset = offsetof(ngx_http_mupdf_loc_conf_t, filter_max_size),
+    .post = NULL },
   { .name = ngx_string("mupdf_store_size"),
     .type = NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
     .set = ngx_conf_set_size_slot,
@@ -715,6 +725,7 @@ static void *ngx_http_mupdf_create_loc_conf(ngx_conf_t *cf) {
     if (!conf) return NULL;
     conf->timeout = NGX_CONF_UNSET_MSEC;
     conf->filter = NGX_CONF_UNSET_UINT;
+    conf->filter_max_size = NGX_CONF_UNSET_SIZE;
 #if (NGX_THREADS)
     conf->thread_pool = NGX_CONF_UNSET_PTR;
 #endif
@@ -765,6 +776,7 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
     ngx_conf_merge_msec_value(conf->timeout, prev->timeout, 0);
     // a location with mupdf <text>; sets 0 and does not inherit the filter
     ngx_conf_merge_uint_value(conf->filter, prev->filter, 0);
+    ngx_conf_merge_size_value(conf->filter_max_size, prev->filter_max_size, 0);
 #if (NGX_THREADS)
     ngx_conf_merge_ptr_value(conf->thread_pool, prev->thread_pool, NULL);
 #endif
