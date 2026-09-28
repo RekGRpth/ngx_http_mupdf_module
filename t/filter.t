@@ -22,7 +22,7 @@ add_block_preprocessor(sub {
 
 our $big = join '', map { "<p>line $_</p>\n" } 1 .. 20000;
 
-plan tests => repeat_each() * 57;
+plan tests => repeat_each() * 70;
 
 no_shuffle();
 run_tests();
@@ -317,3 +317,80 @@ GET /test
 --- must_die
 --- error_log
 is duplicate
+
+
+=== TEST 16: a compressed proxied response is passed through
+--- config
+    location /backend {
+        gzip on;
+        gzip_min_length 1;
+        default_type text/html;
+        return 200 "<p>Hello from backend</p>";
+    }
+    location /test {
+        mupdf;
+        proxy_http_version 1.1;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/backend;
+    }
+--- request
+GET /test
+--- more_headers
+Accept-Encoding: gzip
+--- error_code: 200
+--- response_headers
+Content-Encoding: gzip
+Content-Type: text/html
+--- no_error_log
+[error]
+
+
+=== TEST 17: a compressed response is passed through with mupdf_input_type
+--- config
+    location /backend {
+        gzip on;
+        gzip_min_length 1;
+        default_type text/html;
+        return 200 "<p>Hello from backend</p>";
+    }
+    location /test {
+        mupdf_input_type html;
+        mupdf;
+        proxy_http_version 1.1;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/backend;
+    }
+--- request
+GET /test
+--- more_headers
+Accept-Encoding: gzip
+--- error_code: 200
+--- response_headers
+Content-Encoding: gzip
+Content-Type: text/html
+--- no_error_log
+[error]
+
+
+=== TEST 18: the same backend without compression is converted
+--- config
+    location /backend {
+        gzip on;
+        gzip_min_length 1;
+        default_type text/html;
+        return 200 "<p>Hello from backend</p>";
+    }
+    location /test {
+        mupdf_output_type text;
+        mupdf;
+        proxy_http_version 1.1;
+        proxy_pass http://127.0.0.1:$TEST_NGINX_SERVER_PORT/backend;
+    }
+--- request
+GET /test
+--- error_code: 200
+--- response_headers
+Content-Encoding:
+Content-Type: text/plain
+--- response_body_like eval
+qr/\AHello from backend\s*\z/
+--- no_error_log
+[error]

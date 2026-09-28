@@ -533,6 +533,8 @@ static ngx_int_t ngx_http_mupdf_header_filter(ngx_http_request_t *r) {
     ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
     // a request with a context is converted already, e.g. this is its error page
     if (!conf->filter || r->headers_out.status != NGX_HTTP_OK || ngx_http_get_module_ctx(r, ngx_http_mupdf_module)) return ngx_http_next_header_filter(r);
+    // a compressed response, e.g. from a backend or gzip_static, cannot be read
+    if (r->headers_out.content_encoding && r->headers_out.content_encoding->value.len) return ngx_http_next_header_filter(r);
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_mupdf_header_filter");
     ngx_http_mupdf_main_conf_t *mcf = ngx_http_get_module_main_conf(r, ngx_http_mupdf_module);
     if (!mcf->ctx) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!mcf->ctx"); return ngx_http_filter_finalize_request(r, &ngx_http_mupdf_module, NGX_HTTP_INTERNAL_SERVER_ERROR); }

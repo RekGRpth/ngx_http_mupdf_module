@@ -21,7 +21,7 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - **context:** `location`
 - `mupdf <text>;` sets the input document and makes this module the location's content handler. The value is an [nginx complex value](https://nginx.org/en/docs/dev/development_guide.html#http_variables), so it can reference variables. Only `GET` and `HEAD` requests are accepted, others get `405`. A `HEAD` request still runs the conversion to get `Content-Length`.
 - `mupdf;` without arguments converts the response of the location as a filter, whatever produces it. Nested locations inherit it, except those with their own `mupdf <text>;`.
-  - Only `200` responses are converted, others such as error pages are passed through.
+  - Only `200` responses are converted, others such as error pages are passed through. Compressed responses (with a `Content-Encoding`, e.g. from a backend or `gzip_static`) are passed through too: to convert a backend response, do not let it be compressed, e.g. with `proxy_set_header Accept-Encoding "";`.
   - Without `mupdf_input_type`, the input type is the response `Content-Type`, and responses whose type MuPDF cannot read (e.g. `text/css`) are passed through unchanged. With `mupdf_input_type`, every response is converted as that type.
   - The whole response is collected in memory before the conversion, and its `Content-Length`, `ETag` and `Accept-Ranges` are replaced.
   - A `HEAD` request has no body to convert: it gets the `Content-Type` of the converted response without a `Content-Length`.
