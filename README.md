@@ -27,16 +27,16 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - **syntax:** `mupdf_input_type <type>;`
 - **default:** `html`
 - **context:** `http`, `server`, `location`
-- The input format, as a file extension or MIME type that MuPDF recognises, e.g. `html`, `xhtml`, `pdf`, `xps`, `epub`, `svg`, `png`.
+- The input format, as a file extension or MIME type that MuPDF recognises, e.g. `html`, `xhtml`, `pdf`, `xps`, `epub`, `svg`, `png`. The value can contain variables.
 
 ### mupdf_output_type
 
 - **syntax:** `mupdf_output_type <type>;`
 - **default:** `pdf`
 - **context:** `http`, `server`, `location`
-- The output format passed to the MuPDF document writer, e.g. `pdf`, `png`, `svg`, `ps`, `text`, `html`, `docx`, `odt`, `cbz`.
+- The output format passed to the MuPDF document writer, e.g. `pdf`, `png`, `svg`, `ps`, `text`, `html`, `docx`, `odt`, `cbz`. The value can contain variables.
 - The response `Content-Type` is looked up from this value in the location's `types` map (`mime.types`), the same way nginx does it for file extensions. Formats missing from the standard `mime.types` get a built-in type: `text` is `text/plain`, `stext` is `text/xml`, `stext.json` is `application/json`, `csv` is `text/csv`, `cbz` is `application/vnd.comicbook+zip`, `pam`, `pbm`, `pgm`, `pnm` and `ppm` are `image/x-portable-*`, `pcl` is `application/vnd.hp-pcl`, `pwg` is `image/pwg-raster` and `ocr` is `application/pdf`. Other formats fall back to `default_type`.
-- The output type and `mupdf_options` are checked when the configuration is loaded, in every location with `mupdf`, so an unknown format fails `nginx -t` instead of every request.
+- When the output type and `mupdf_options` contain no variables, they are checked when the configuration is loaded, in every location with `mupdf`, so an unknown format fails `nginx -t` instead of every request. With variables, the type is resolved and an unknown format fails with `500` per request.
 - Image formats such as `png` write each page as a separate image into the same response, so use `mupdf_range` to select a single page.
 
 ### mupdf_options
@@ -44,14 +44,14 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - **syntax:** `mupdf_options <options>;`
 - **default:** empty
 - **context:** `http`, `server`, `location`
-- Comma-separated MuPDF document writer options, e.g. `compress` for PDF or `resolution=150` for images.
+- Comma-separated MuPDF document writer options, e.g. `compress` for PDF or `resolution=150` for images. The value can contain variables.
 
 ### mupdf_range
 
 - **syntax:** `mupdf_range <range>;`
 - **default:** `1-N`
 - **context:** `http`, `server`, `location`
-- The pages to convert, in MuPDF page range syntax: comma-separated page numbers and ranges, where `N` is the last page. A range may run backwards, e.g. `N-1` outputs the pages in reverse order.
+- The pages to convert, in MuPDF page range syntax: comma-separated page numbers and ranges, where `N` is the last page. A range may run backwards, e.g. `N-1` outputs the pages in reverse order. The value can contain variables, e.g. `mupdf_range $arg_page;`.
 
 ### mupdf_timeout
 
@@ -118,6 +118,16 @@ TEST_NGINX_MUPDF_MODULE=/path/to/objs/ngx_http_mupdf_module.so prove -r t/
 ## Security
 
 The input document is whatever the `mupdf` value expands to. If it includes request data, e.g. `mupdf "<h1>Hello, $arg_name</h1>";`, a client can inject its own markup into the document. Escape such values or do not use them.
+
+Do not pass request data to `mupdf_output_type` or `mupdf_options` unchecked: a client could pick any output format, or options such as a very high `resolution` that make the conversion use a lot of memory and time. Restrict such values with a [map](https://nginx.org/en/docs/http/ngx_http_map_module.html):
+
+```nginx
+map $arg_format $mupdf_format {
+    default pdf;
+    png     png;
+    text    text;
+}
+```
 
 MuPDF opens the document from memory, so HTML input cannot load local files through `<img>`, `<link>` or `file://` URLs.
 

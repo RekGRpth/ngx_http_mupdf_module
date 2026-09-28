@@ -12,10 +12,11 @@ typedef struct {
 
 typedef struct {
     ngx_http_complex_value_t *input_data;
-    ngx_str_t input_type;
-    ngx_str_t output_type;
-    ngx_str_t options;
-    ngx_str_t range;
+    ngx_http_complex_value_t *input_type;
+    ngx_http_complex_value_t *output_type;
+    ngx_http_complex_value_t *options;
+    ngx_http_complex_value_t *range;
+    // precomputed for a constant output type
     ngx_str_t exten;
     ngx_uint_t exten_hash;
     ngx_str_t content_type;
@@ -81,6 +82,20 @@ static ngx_http_mupdf_type_t ngx_http_mupdf_types[] = {
     { ngx_string("text"), ngx_string("text/plain") },
     { ngx_null_string, ngx_null_string }
 };
+
+static ngx_http_complex_value_t ngx_http_mupdf_default_input_type = { .value = ngx_string("html") };
+static ngx_http_complex_value_t ngx_http_mupdf_default_output_type = { .value = ngx_string("pdf") };
+static ngx_http_complex_value_t ngx_http_mupdf_default_options = { .value = ngx_string("") };
+static ngx_http_complex_value_t ngx_http_mupdf_default_range = { .value = ngx_string("1-N") };
+
+// lowercase the output type into exten and find its built-in content type
+static ngx_uint_t ngx_http_mupdf_exten(ngx_str_t *output_type, ngx_str_t *exten, ngx_str_t *content_type) {
+    exten->len = output_type->len;
+    ngx_uint_t hash = ngx_hash_strlow(exten->data, output_type->data, output_type->len);
+    ngx_str_null(content_type);
+    for (ngx_http_mupdf_type_t *type = ngx_http_mupdf_types; type->format.len; type++) if (type->format.len == exten->len && !ngx_strncmp(type->format.data, exten->data, exten->len)) { *content_type = type->type; break; }
+    return hash;
+}
 
 ngx_module_t ngx_http_mupdf_module;
 
@@ -239,8 +254,15 @@ static ngx_int_t ngx_http_mupdf_send(ngx_http_request_t *r, ngx_http_mupdf_task_
     // like ngx_http_set_content_type() for the output type as an extension, with the mupdf formats missing from mime.types before default_type
     if (!r->headers_out.content_type.len) {
         ngx_http_core_loc_conf_t *clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
-        ngx_str_t *type = ngx_hash_find(&clcf->types_hash, conf->exten_hash, conf->exten.data, conf->exten.len);
-        if (!type) type = conf->content_type.len ? &conf->content_type : &clcf->default_type;
+        ngx_str_t exten = conf->exten, content_type = conf->content_type;
+        ngx_uint_t hash = conf->exten_hash;
+        if (conf->output_type->lengths) {
+            ngx_str_t output_type = { ngx_strlen(t->output_type), (u_char *) t->output_type };
+            if (!(exten.data = ngx_pnalloc(r->pool, output_type.len))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!ngx_pnalloc"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+            hash = ngx_http_mupdf_exten(&output_type, &exten, &content_type);
+        }
+        ngx_str_t *type = ngx_hash_find(&clcf->types_hash, hash, exten.data, exten.len);
+        if (!type) type = content_type.len ? &content_type : &clcf->default_type;
         r->headers_out.content_type_len = type->len;
         r->headers_out.content_type = *type;
     }
@@ -304,6 +326,12 @@ static char *ngx_http_mupdf_str(ngx_pool_t *pool, ngx_str_t *str) {
     return s;
 }
 
+static char *ngx_http_mupdf_value(ngx_http_request_t *r, ngx_http_complex_value_t *cv) {
+    ngx_str_t value;
+    if (ngx_http_complex_value(r, cv, &value) != NGX_OK) return NULL;
+    return ngx_http_mupdf_str(r->pool, &value);
+}
+
 static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_mupdf_handler");
     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) return NGX_HTTP_NOT_ALLOWED;
@@ -328,10 +356,10 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     t->ctx = mcf->ctx;
     t->start = ngx_http_mupdf_now();
     t->timeout = conf->timeout;
-    if (!(t->input_type = ngx_http_mupdf_str(r->pool, &conf->input_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
-    if (!(t->output_type = ngx_http_mupdf_str(r->pool, &conf->output_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!output_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
-    if (!(t->options = ngx_http_mupdf_str(r->pool, &conf->options))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!options"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
-    if (!(t->range = ngx_http_mupdf_str(r->pool, &conf->range))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!range"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->input_type = ngx_http_mupdf_value(r, conf->input_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!input_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->output_type = ngx_http_mupdf_value(r, conf->output_type))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!output_type"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->options = ngx_http_mupdf_value(r, conf->options))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!options"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
+    if (!(t->range = ngx_http_mupdf_value(r, conf->range))) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!range"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
     if (ngx_http_complex_value(r, conf->input_data, &t->input_data) != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_complex_value != NGX_OK"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "input_data = %V, input_type = %s, output_type = %s, range = %s, options = %s", &t->input_data, t->input_type, t->output_type, t->range, t->options);
 #if (NGX_THREADS)
@@ -384,25 +412,25 @@ static char *ngx_http_mupdf_thread_pool_set(ngx_conf_t *cf, ngx_command_t *cmd, 
 static ngx_command_t ngx_http_mupdf_commands[] = {
   { .name = ngx_string("mupdf_input_type"),
     .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    .set = ngx_conf_set_str_slot,
+    .set = ngx_http_set_complex_value_slot,
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, input_type),
     .post = NULL },
   { .name = ngx_string("mupdf_output_type"),
     .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    .set = ngx_conf_set_str_slot,
+    .set = ngx_http_set_complex_value_slot,
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, output_type),
     .post = NULL },
   { .name = ngx_string("mupdf_options"),
     .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    .set = ngx_conf_set_str_slot,
+    .set = ngx_http_set_complex_value_slot,
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, options),
     .post = NULL },
   { .name = ngx_string("mupdf_range"),
     .type = NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    .set = ngx_conf_set_str_slot,
+    .set = ngx_http_set_complex_value_slot,
     .conf = NGX_HTTP_LOC_CONF_OFFSET,
     .offset = offsetof(ngx_http_mupdf_loc_conf_t, range),
     .post = NULL },
@@ -460,8 +488,8 @@ static void ngx_http_mupdf_quiet_callback(void *user, const char *message) { }
 
 // reject an unknown output type or bad options when loading the configuration instead of failing every request
 static char *ngx_http_mupdf_check_output(ngx_conf_t *cf, ngx_http_mupdf_loc_conf_t *conf) {
-    char *output_type = ngx_http_mupdf_str(cf->temp_pool, &conf->output_type);
-    char *options = ngx_http_mupdf_str(cf->temp_pool, &conf->options);
+    char *output_type = ngx_http_mupdf_str(cf->temp_pool, &conf->output_type->value);
+    char *options = ngx_http_mupdf_str(cf->temp_pool, &conf->options->value);
     if (!output_type || !options) return NGX_CONF_ERROR;
     fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
     if (!ctx) { ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "!fz_new_context"); return NGX_CONF_ERROR; }
@@ -488,20 +516,21 @@ static char *ngx_http_mupdf_check_output(ngx_conf_t *cf, ngx_http_mupdf_loc_conf
 static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_mupdf_loc_conf_t *prev = parent;
     ngx_http_mupdf_loc_conf_t *conf = child;
-    ngx_conf_merge_str_value(conf->input_type, prev->input_type, "html");
-    ngx_conf_merge_str_value(conf->output_type, prev->output_type, "pdf");
-    if (!(conf->exten.data = ngx_pnalloc(cf->pool, conf->output_type.len))) return NGX_CONF_ERROR;
-    conf->exten.len = conf->output_type.len;
-    conf->exten_hash = ngx_hash_strlow(conf->exten.data, conf->output_type.data, conf->output_type.len);
-    for (ngx_http_mupdf_type_t *type = ngx_http_mupdf_types; type->format.len; type++) if (type->format.len == conf->exten.len && !ngx_strncmp(type->format.data, conf->exten.data, conf->exten.len)) { conf->content_type = type->type; break; }
-    ngx_conf_merge_str_value(conf->options, prev->options, "");
-    ngx_conf_merge_str_value(conf->range, prev->range, "1-N");
+    if (!conf->input_type) conf->input_type = prev->input_type ? prev->input_type : &ngx_http_mupdf_default_input_type;
+    if (!conf->output_type) conf->output_type = prev->output_type ? prev->output_type : &ngx_http_mupdf_default_output_type;
+    if (!conf->options) conf->options = prev->options ? prev->options : &ngx_http_mupdf_default_options;
+    if (!conf->range) conf->range = prev->range ? prev->range : &ngx_http_mupdf_default_range;
+    if (!conf->output_type->lengths) {
+        if (!(conf->exten.data = ngx_pnalloc(cf->pool, conf->output_type->value.len))) return NGX_CONF_ERROR;
+        conf->exten_hash = ngx_http_mupdf_exten(&conf->output_type->value, &conf->exten, &conf->content_type);
+    }
     if (!conf->input_data) conf->input_data = prev->input_data;
     ngx_conf_merge_msec_value(conf->timeout, prev->timeout, 0);
 #if (NGX_THREADS)
     ngx_conf_merge_ptr_value(conf->thread_pool, prev->thread_pool, NULL);
 #endif
-    if (conf->input_data) return ngx_http_mupdf_check_output(cf, conf);
+    // with variables the output type and options are only known per request
+    if (conf->input_data && !conf->output_type->lengths && !conf->options->lengths) return ngx_http_mupdf_check_output(cf, conf);
     return NGX_CONF_OK;
 }
 
