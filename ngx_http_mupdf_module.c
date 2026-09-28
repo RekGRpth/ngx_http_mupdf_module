@@ -108,7 +108,7 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
 //    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "output_len = %ul", output_len);
     ngx_buf_t *buf = ngx_create_temp_buf(r->pool, output_len);
     fz_var(buf);
-    if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); goto fz_drop_context; }
+    if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); output_len = 0; goto fz_drop_context; }
     buf->last = ngx_cpymem(buf->last, output_data, output_len);
 fz_drop_context:
     if (obuf) fz_drop_buffer(ctx, obuf);
