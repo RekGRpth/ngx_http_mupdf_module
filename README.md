@@ -1,6 +1,6 @@
 # ngx_http_mupdf_module
 
-An nginx module that converts documents with the [MuPDF](https://mupdf.com/) library. A location takes its input document (HTML by default) from an nginx complex value, converts the selected pages to another format (PDF by default) and returns the result as the response.
+An nginx module that converts documents with the [MuPDF](https://mupdf.com/) library. A location either takes its input document (HTML by default) from an nginx complex value, or converts the response it would otherwise send (a static file, `proxy_pass`, `return`, ...), and returns the selected pages in another format (PDF by default).
 
 ## Building
 
@@ -17,10 +17,15 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 
 ### mupdf
 
-- **syntax:** `mupdf <text>;`
+- **syntax:** `mupdf <text>;` or `mupdf;`
 - **context:** `location`
-- Sets the input document and makes this module the location's content handler. The value is an [nginx complex value](https://nginx.org/en/docs/dev/development_guide.html#http_variables), so it can reference variables.
-- Only `GET` and `HEAD` requests are accepted, others get `405`. A `HEAD` request still runs the conversion to get `Content-Length`.
+- `mupdf <text>;` sets the input document and makes this module the location's content handler. The value is an [nginx complex value](https://nginx.org/en/docs/dev/development_guide.html#http_variables), so it can reference variables. Only `GET` and `HEAD` requests are accepted, others get `405`. A `HEAD` request still runs the conversion to get `Content-Length`.
+- `mupdf;` without arguments converts the response of the location as a filter, whatever produces it. Nested locations inherit it, except those with their own `mupdf <text>;`.
+  - Only `200` responses are converted, others such as error pages are passed through.
+  - Without `mupdf_input_type`, the input type is the response `Content-Type`, and responses whose type MuPDF cannot read (e.g. `text/css`) are passed through unchanged. With `mupdf_input_type`, every response is converted as that type.
+  - The whole response is collected in memory before the conversion, and its `Content-Length`, `ETag` and `Accept-Ranges` are replaced.
+  - A `HEAD` request has no body to convert: it gets the `Content-Type` of the converted response without a `Content-Length`.
+  - A conversion error is a `500` response. `mupdf_thread_pool` and `mupdf_timeout` apply as in the content handler.
 
 ### mupdf_input_type
 
@@ -87,6 +92,20 @@ location /hello {
 }
 ```
 
+### Static HTML files and a backend served as PDF
+
+```nginx
+location /docs/ {
+    mupdf;
+}
+
+location /report {
+    mupdf_thread_pool default;
+    mupdf;
+    proxy_pass http://backend;
+}
+```
+
 ### First page of a PDF as a PNG image, in a thread pool
 
 ```nginx
@@ -131,4 +150,4 @@ map $arg_format $mupdf_format {
 
 MuPDF opens the document from memory, so HTML input cannot load local files through `<img>`, `<link>` or `file://` URLs.
 
-The whole input and output documents are held in memory for the duration of the request.
+The whole input and output documents are held in memory for the duration of the request. In filter mode this includes the response being converted, however large it is, so limit what the location can serve.
