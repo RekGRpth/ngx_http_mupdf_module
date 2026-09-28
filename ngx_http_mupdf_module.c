@@ -112,7 +112,7 @@ static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
         if (doc) fz_drop_document(ctx, doc);
         if (stm) fz_drop_stream(ctx, stm);
     } fz_catch(ctx) {
-//        ngx_log_error(NGX_LOG_ERR, log, 0, "%s", fz_caught_message(ctx));
+        fz_report_error(ctx);
         goto fz_drop_context;
     }
     unsigned char *output_data = NULL;
@@ -346,6 +346,7 @@ static ngx_int_t ngx_http_mupdf_init_process(ngx_cycle_t *cycle) {
         fz_register_document_handlers(ctx);
         fz_set_use_document_css(ctx, 1);
     } fz_catch(ctx) {
+        fz_report_error(ctx);
         error = 1;
     }
     if (error) { fz_drop_context(ctx); return NGX_OK; }
