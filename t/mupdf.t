@@ -19,7 +19,7 @@ add_block_preprocessor(sub {
     $block->set_value('main_config', "load_module $module;\n" . ($block->main_config // ''));
 });
 
-plan tests => repeat_each() * 41;
+plan tests => repeat_each() * 43;
 
 no_shuffle();
 run_tests();
@@ -105,24 +105,9 @@ qr/^\x89PNG\r\n/
 [error]
 
 
-=== TEST 6: an output type missing from mime.types falls back to default_type
+=== TEST 6: an output type missing from mime.types gets a built-in type
 --- config
     location /test {
-        default_type application/x-test;
-        mupdf_output_type text;
-        mupdf "<p>Hello</p>";
-    }
---- request
-GET /test
---- error_code: 200
---- response_headers
-Content-Type: application/x-test
-
-
-=== TEST 7: an output type can be mapped with types
---- config
-    location /test {
-        types { text/plain text; }
         mupdf_output_type text;
         mupdf "<p>Hello</p>";
     }
@@ -133,7 +118,35 @@ GET /test
 Content-Type: text/plain
 
 
-=== TEST 8: mupdf_range selects and orders pages
+=== TEST 7: types takes precedence over the built-in type
+--- config
+    location /test {
+        types { text/x-test text; }
+        mupdf_output_type text;
+        mupdf "<p>Hello</p>";
+    }
+--- request
+GET /test
+--- error_code: 200
+--- response_headers
+Content-Type: text/x-test
+
+
+=== TEST 8: an output type without a known type falls back to default_type
+--- config
+    location /test {
+        default_type application/x-test;
+        mupdf_output_type pkm;
+        mupdf "<p>Hello</p>";
+    }
+--- request
+GET /test
+--- error_code: 200
+--- response_headers
+Content-Type: application/x-test
+
+
+=== TEST 9: mupdf_range selects and orders pages
 --- config
     location /test {
         mupdf_output_type text;
@@ -149,7 +162,7 @@ qr/\A\s*three\s+one\s*\z/
 [error]
 
 
-=== TEST 9: empty output of a successful conversion is an empty 200 response
+=== TEST 10: empty output of a successful conversion is an empty 200 response
 --- config
     location /test {
         mupdf_output_type text;
@@ -166,7 +179,7 @@ Content-Length: 0
 [alert]
 
 
-=== TEST 10: subrequests, including an empty one
+=== TEST 11: subrequests, including an empty one
 --- config
     location /empty {
         mupdf_output_type text;
@@ -192,7 +205,7 @@ qr/\AAB\s*hi\s*C\z/
 [alert]
 
 
-=== TEST 11: an unknown output type is a request error
+=== TEST 12: an unknown output type is a request error
 --- config
     location /test {
         mupdf_output_type nosuch;
@@ -205,7 +218,7 @@ GET /test
 unknown output document format: nosuch
 
 
-=== TEST 12: an unknown input type is a request error
+=== TEST 13: an unknown input type is a request error
 --- config
     location /test {
         mupdf_input_type nosuch;
@@ -218,7 +231,7 @@ GET /test
 cannot find document handler for file type: 'nosuch'
 
 
-=== TEST 13: mupdf messages are not used as a format string
+=== TEST 14: mupdf messages are not used as a format string
 --- config
     location /test {
         mupdf_input_type "%s%s%s%V%n";

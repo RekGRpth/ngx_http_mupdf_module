@@ -35,7 +35,7 @@ The `mupdf_thread_pool` directive requires nginx built `--with-threads`.
 - **default:** `pdf`
 - **context:** `http`, `server`, `location`
 - The output format passed to the MuPDF document writer, e.g. `pdf`, `png`, `svg`, `ps`, `text`, `html`, `docx`, `odt`, `cbz`.
-- The response `Content-Type` is looked up from this value in the location's `types` map (`mime.types`), the same way nginx does it for file extensions, and falls back to `default_type`.
+- The response `Content-Type` is looked up from this value in the location's `types` map (`mime.types`), the same way nginx does it for file extensions. Formats missing from the standard `mime.types` get a built-in type: `text` is `text/plain`, `stext` is `text/xml`, `stext.json` is `application/json`, `csv` is `text/csv`, `cbz` is `application/vnd.comicbook+zip`, `pam`, `pbm`, `pgm`, `pnm` and `ppm` are `image/x-portable-*`, `pcl` is `application/vnd.hp-pcl`, `pwg` is `image/pwg-raster` and `ocr` is `application/pdf`. Other formats fall back to `default_type`.
 - Image formats such as `png` write each page as a separate image into the same response, so use `mupdf_range` to select a single page.
 
 ### mupdf_options

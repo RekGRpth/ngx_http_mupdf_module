@@ -16,6 +16,9 @@ typedef struct {
     ngx_str_t output_type;
     ngx_str_t options;
     ngx_str_t range;
+    ngx_str_t exten;
+    ngx_uint_t exten_hash;
+    ngx_str_t content_type;
     ngx_msec_t timeout;
 #if (NGX_THREADS)
     ngx_thread_pool_t *thread_pool;
@@ -39,6 +42,29 @@ typedef struct {
     ngx_event_t timer;
 #endif
 } ngx_http_mupdf_task_t;
+
+typedef struct {
+    ngx_str_t format;
+    ngx_str_t type;
+} ngx_http_mupdf_type_t;
+
+// mupdf output formats missing from the standard mime.types
+static ngx_http_mupdf_type_t ngx_http_mupdf_types[] = {
+    { ngx_string("cbz"), ngx_string("application/vnd.comicbook+zip") },
+    { ngx_string("csv"), ngx_string("text/csv") },
+    { ngx_string("ocr"), ngx_string("application/pdf") },
+    { ngx_string("pam"), ngx_string("image/x-portable-arbitrarymap") },
+    { ngx_string("pbm"), ngx_string("image/x-portable-bitmap") },
+    { ngx_string("pcl"), ngx_string("application/vnd.hp-pcl") },
+    { ngx_string("pgm"), ngx_string("image/x-portable-graymap") },
+    { ngx_string("pnm"), ngx_string("image/x-portable-anymap") },
+    { ngx_string("ppm"), ngx_string("image/x-portable-pixmap") },
+    { ngx_string("pwg"), ngx_string("image/pwg-raster") },
+    { ngx_string("stext"), ngx_string("text/xml") },
+    { ngx_string("stext.json"), ngx_string("application/json") },
+    { ngx_string("text"), ngx_string("text/plain") },
+    { ngx_null_string, ngx_null_string }
+};
 
 ngx_module_t ngx_http_mupdf_module;
 
@@ -169,12 +195,15 @@ static ngx_int_t ngx_http_mupdf_send(ngx_http_request_t *r, ngx_http_mupdf_task_
     ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = t->output_len;
-    ngx_str_t exten = r->exten;
-    r->exten = conf->output_type;
-    ngx_int_t rc = ngx_http_set_content_type(r);
-    r->exten = exten;
-    if (rc != NGX_OK) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_set_content_type != NGX_OK"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
-    rc = ngx_http_send_header(r);
+    // like ngx_http_set_content_type() for the output type as an extension, with the mupdf formats missing from mime.types before default_type
+    if (!r->headers_out.content_type.len) {
+        ngx_http_core_loc_conf_t *clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+        ngx_str_t *type = ngx_hash_find(&clcf->types_hash, conf->exten_hash, conf->exten.data, conf->exten.len);
+        if (!type) type = conf->content_type.len ? &conf->content_type : &clcf->default_type;
+        r->headers_out.content_type_len = type->len;
+        r->headers_out.content_type = *type;
+    }
+    ngx_int_t rc = ngx_http_send_header(r);
 //    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
     if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) return rc;
     if (!t->output_len) return ngx_http_send_special(r, NGX_HTTP_LAST);
@@ -377,6 +406,10 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
     ngx_http_mupdf_loc_conf_t *conf = child;
     ngx_conf_merge_str_value(conf->input_type, prev->input_type, "html");
     ngx_conf_merge_str_value(conf->output_type, prev->output_type, "pdf");
+    if (!(conf->exten.data = ngx_pnalloc(cf->pool, conf->output_type.len))) return NGX_CONF_ERROR;
+    conf->exten.len = conf->output_type.len;
+    conf->exten_hash = ngx_hash_strlow(conf->exten.data, conf->output_type.data, conf->output_type.len);
+    for (ngx_http_mupdf_type_t *type = ngx_http_mupdf_types; type->format.len; type++) if (type->format.len == conf->exten.len && !ngx_strncmp(type->format.data, conf->exten.data, conf->exten.len)) { conf->content_type = type->type; break; }
     ngx_conf_merge_str_value(conf->options, prev->options, "");
     ngx_conf_merge_str_value(conf->range, prev->range, "1-N");
     if (!conf->input_data) conf->input_data = prev->input_data;
