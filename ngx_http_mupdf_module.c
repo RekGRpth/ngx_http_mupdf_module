@@ -182,7 +182,7 @@ static char *ngx_http_mupdf_str(ngx_pool_t *pool, ngx_str_t *str) {
 
 static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_mupdf_handler");
-    if (!(r->method & NGX_HTTP_GET)) return NGX_HTTP_NOT_ALLOWED;
+    if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) return NGX_HTTP_NOT_ALLOWED;
     ngx_int_t rc = ngx_http_discard_request_body(r);
     if (rc != NGX_OK && rc != NGX_AGAIN) return rc;
     ngx_http_mupdf_main_conf_t *mcf = ngx_http_get_module_main_conf(r, ngx_http_mupdf_module);
