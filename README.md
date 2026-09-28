@@ -106,6 +106,14 @@ http {
 }
 ```
 
+## Tests
+
+The tests use [Test::Nginx](https://metacpan.org/pod/Test::Nginx::Socket) and the `nginx` binary found in `PATH`. They load the module from `/etc/nginx/modules/ngx_http_mupdf_module.so`, or from the path in `TEST_NGINX_MUPDF_MODULE`:
+
+```sh
+TEST_NGINX_MUPDF_MODULE=/path/to/objs/ngx_http_mupdf_module.so prove -r t/
+```
+
 ## Security
 
 The input document is whatever the `mupdf` value expands to. If it includes request data, e.g. `mupdf "<h1>Hello, $arg_name</h1>";`, a client can inject its own markup into the document. Escape such values or do not use them.
