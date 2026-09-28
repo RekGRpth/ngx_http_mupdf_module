@@ -31,6 +31,7 @@ typedef struct {
     ngx_str_t input_data;
     u_char *output_data;
     size_t output_len;
+    unsigned done:1;
     fz_cookie cookie;
     ngx_msec_t start;
     ngx_msec_t timeout;
@@ -143,10 +144,13 @@ static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
     }
     unsigned char *output_data = NULL;
     size_t output_len = fz_buffer_storage(ctx, obuf, &output_data);
-    if (!output_len) { ngx_log_error(NGX_LOG_ERR, log, 0, "!fz_buffer_storage"); goto fz_drop_context; }
-    if (!(t->output_data = ngx_alloc(output_len, log))) goto fz_drop_context;
-    ngx_memcpy(t->output_data, output_data, output_len);
-    t->output_len = output_len;
+    // empty output is valid, e.g. text of a document without text
+    if (output_len) {
+        if (!(t->output_data = ngx_alloc(output_len, log))) goto fz_drop_context;
+        ngx_memcpy(t->output_data, output_data, output_len);
+        t->output_len = output_len;
+    }
+    t->done = 1;
 fz_drop_context:
     if (obuf) fz_drop_buffer(ctx, obuf);
     fz_drop_context(ctx);
@@ -161,16 +165,8 @@ static void ngx_http_mupdf_cleanup(void *data) {
 }
 
 static ngx_int_t ngx_http_mupdf_send(ngx_http_request_t *r, ngx_http_mupdf_task_t *t) {
-    if (!t->output_len) return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    if (!t->done) return NGX_HTTP_INTERNAL_SERVER_ERROR;
     ngx_http_mupdf_loc_conf_t *conf = ngx_http_get_module_loc_conf(r, ngx_http_mupdf_module);
-    ngx_buf_t *buf = ngx_calloc_buf(r->pool);
-    if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); return NGX_HTTP_INTERNAL_SERVER_ERROR; }
-    buf->pos = t->output_data;
-    buf->last = t->output_data + t->output_len;
-    buf->memory = 1;
-    buf->last_buf = (r == r->main) ? 1 : 0;
-    buf->last_in_chain = 1;
-    ngx_chain_t ch = {.buf = buf, .next = NULL};
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = t->output_len;
     ngx_str_t exten = r->exten;
@@ -181,6 +177,15 @@ static ngx_int_t ngx_http_mupdf_send(ngx_http_request_t *r, ngx_http_mupdf_task_
     rc = ngx_http_send_header(r);
 //    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "rc = %i", rc);
     if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) return rc;
+    if (!t->output_len) return ngx_http_send_special(r, NGX_HTTP_LAST);
+    ngx_buf_t *buf = ngx_calloc_buf(r->pool);
+    if (!buf) { ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "!buf"); return NGX_ERROR; }
+    buf->pos = t->output_data;
+    buf->last = t->output_data + t->output_len;
+    buf->memory = 1;
+    buf->last_buf = (r == r->main) ? 1 : 0;
+    buf->last_in_chain = 1;
+    ngx_chain_t ch = {.buf = buf, .next = NULL};
     return ngx_http_output_filter(r, &ch);
 }
 
