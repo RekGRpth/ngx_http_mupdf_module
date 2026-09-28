@@ -213,14 +213,8 @@ static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
         fz_report_error(ctx);
         goto fz_drop_context;
     }
-    unsigned char *output_data = NULL;
-    size_t output_len = fz_buffer_storage(ctx, obuf, &output_data);
-    // empty output is valid, e.g. text of a document without text
-    if (output_len) {
-        if (!(t->output_data = ngx_alloc(output_len, log))) goto fz_drop_context;
-        ngx_memcpy(t->output_data, output_data, output_len);
-        t->output_len = output_len;
-    }
+    // take the data without a copy, it is freed with fz_free() in the request pool cleanup; empty output is valid, e.g. text of a document without text
+    t->output_len = fz_buffer_extract(ctx, obuf, &t->output_data);
     t->done = 1;
 fz_drop_context:
     if (obuf) fz_drop_buffer(ctx, obuf);
@@ -233,7 +227,8 @@ static void ngx_http_mupdf_cleanup(void *data) {
     if (t->timer.timer_set) ngx_del_timer(&t->timer);
     for (ngx_http_mupdf_message_t *m = t->messages, *next; m; m = next) { next = m->next; ngx_free(m); }
 #endif
-    if (t->output_data) ngx_free(t->output_data);
+    // the clone that allocated it shares the allocator with the worker context
+    fz_free(t->ctx, t->output_data);
 }
 
 static ngx_int_t ngx_http_mupdf_send(ngx_http_request_t *r, ngx_http_mupdf_task_t *t) {
