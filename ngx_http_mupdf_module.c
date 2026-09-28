@@ -113,7 +113,7 @@ static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
         if (doc) fz_drop_document(ctx, doc);
         if (stm) fz_drop_stream(ctx, stm);
     } fz_catch(ctx) {
-//        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, fz_caught_message(ctx));
+//        ngx_log_error(NGX_LOG_ERR, log, 0, "%s", fz_caught_message(ctx));
         goto fz_drop_context;
     }
     unsigned char *output_data = NULL;
