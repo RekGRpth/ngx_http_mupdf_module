@@ -456,6 +456,35 @@ static void *ngx_http_mupdf_create_loc_conf(ngx_conf_t *cf) {
     return conf;
 }
 
+static void ngx_http_mupdf_quiet_callback(void *user, const char *message) { }
+
+// reject an unknown output type or bad options when loading the configuration instead of failing every request
+static char *ngx_http_mupdf_check_output(ngx_conf_t *cf, ngx_http_mupdf_loc_conf_t *conf) {
+    char *output_type = ngx_http_mupdf_str(cf->temp_pool, &conf->output_type);
+    char *options = ngx_http_mupdf_str(cf->temp_pool, &conf->options);
+    if (!output_type || !options) return NGX_CONF_ERROR;
+    fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
+    if (!ctx) { ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "!fz_new_context"); return NGX_CONF_ERROR; }
+    fz_set_error_callback(ctx, ngx_http_mupdf_quiet_callback, NULL);
+    fz_set_warning_callback(ctx, ngx_http_mupdf_quiet_callback, NULL);
+    char *rv = NGX_CONF_OK;
+    fz_buffer *buf = NULL; fz_var(buf);
+    fz_document_writer *wri = NULL; fz_var(wri);
+    fz_try(ctx) {
+        buf = fz_new_buffer(ctx, 0);
+        wri = fz_new_document_writer_with_buffer(ctx, buf, output_type, options);
+    } fz_always(ctx) {
+        if (wri) fz_drop_document_writer(ctx, wri);
+        if (buf) fz_drop_buffer(ctx, buf);
+    } fz_catch(ctx) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "mupdf: %s", fz_caught_message(ctx));
+        fz_report_error(ctx);
+        rv = NGX_CONF_ERROR;
+    }
+    fz_drop_context(ctx);
+    return rv;
+}
+
 static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_mupdf_loc_conf_t *prev = parent;
     ngx_http_mupdf_loc_conf_t *conf = child;
@@ -472,6 +501,7 @@ static char *ngx_http_mupdf_merge_loc_conf(ngx_conf_t *cf, void *parent, void *c
 #if (NGX_THREADS)
     ngx_conf_merge_ptr_value(conf->thread_pool, prev->thread_pool, NULL);
 #endif
+    if (conf->input_data) return ngx_http_mupdf_check_output(cf, conf);
     return NGX_CONF_OK;
 }
 

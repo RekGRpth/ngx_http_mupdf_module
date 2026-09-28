@@ -115,14 +115,14 @@ Content-Length: 0
 --- config
     location /test {
         mupdf_thread_pool mupdf;
-        mupdf_output_type nosuch;
+        mupdf_input_type nosuch;
         mupdf "<p>Hello</p>";
     }
 --- request
 GET /test
 --- error_code: 500
 --- error_log eval
-qr/unknown output document format: nosuch, client: \S+, server: \S*, request: "GET \/test HTTP\/1\.1"/
+qr/cannot find document handler for file type: 'nosuch', client: \S+, server: \S*, request: "GET \/test HTTP\/1\.1"/
 
 
 === TEST 7: messages from a thread pool are limited

@@ -17,7 +17,7 @@ add_block_preprocessor(sub {
     $block->set_value('main_config', "load_module $module;\n" . ($block->main_config // ''));
 });
 
-plan tests => repeat_each() * 18;
+plan tests => repeat_each() * 24;
 
 no_shuffle();
 run_tests();
@@ -75,7 +75,49 @@ GET /test
 unknown thread pool "nosuch"
 
 
-=== TEST 5: a limited store
+=== TEST 5: an unknown output type is rejected
+--- config
+    location /test {
+        mupdf_output_type nosuch;
+        mupdf "<p>Hello</p>";
+    }
+--- request
+GET /test
+--- must_die
+--- error_log
+mupdf: unknown output document format: nosuch
+
+
+=== TEST 6: an inherited output type is checked where mupdf is used
+--- config
+    mupdf_output_type nosuch;
+    location /unused {
+        return 200 "ok";
+    }
+    location /test {
+        mupdf "<p>Hello</p>";
+    }
+--- request
+GET /unused
+--- must_die
+--- error_log
+mupdf: unknown output document format: nosuch
+
+
+=== TEST 7: an output type is not checked where mupdf is not used
+--- config
+    mupdf_output_type nosuch;
+    location /test {
+        return 200 "ok";
+    }
+--- request
+GET /test
+--- error_code: 200
+--- response_body chomp
+ok
+
+
+=== TEST 8: a limited store
 --- http_config
     mupdf_store_size 1m;
 --- config
@@ -90,7 +132,7 @@ GET /test
 [error]
 
 
-=== TEST 6: an unlimited store
+=== TEST 9: an unlimited store
 --- http_config
     mupdf_store_size 0;
 --- config
@@ -105,7 +147,7 @@ GET /test
 [error]
 
 
-=== TEST 7: a loaded module that no location uses does not get in the way
+=== TEST 10: a loaded module that no location uses does not get in the way
 --- config
     location /test {
         return 200 "ok";

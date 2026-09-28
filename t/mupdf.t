@@ -19,7 +19,7 @@ add_block_preprocessor(sub {
     $block->set_value('main_config', "load_module $module;\n" . ($block->main_config // ''));
 });
 
-plan tests => repeat_each() * 43;
+plan tests => repeat_each() * 41;
 
 no_shuffle();
 run_tests();
@@ -205,20 +205,7 @@ qr/\AAB\s*hi\s*C\z/
 [alert]
 
 
-=== TEST 12: an unknown output type is a request error
---- config
-    location /test {
-        mupdf_output_type nosuch;
-        mupdf "<p>Hello</p>";
-    }
---- request
-GET /test
---- error_code: 500
---- error_log
-unknown output document format: nosuch
-
-
-=== TEST 13: an unknown input type is a request error
+=== TEST 12: an unknown input type is a request error
 --- config
     location /test {
         mupdf_input_type nosuch;
@@ -231,7 +218,7 @@ GET /test
 cannot find document handler for file type: 'nosuch'
 
 
-=== TEST 14: mupdf messages are not used as a format string
+=== TEST 13: mupdf messages are not used as a format string
 --- config
     location /test {
         mupdf_input_type "%s%s%s%V%n";
