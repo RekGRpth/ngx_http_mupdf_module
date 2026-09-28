@@ -102,10 +102,9 @@ static void ngx_http_mupdf_convert(ngx_http_mupdf_task_t *t, ngx_log_t *log) {
     fz_document_writer *wri = NULL; fz_var(wri);
     fz_try(ctx) {
         obuf = fz_new_buffer(ctx, 0);
-        fz_set_user_context(ctx, obuf);
         stm = fz_open_memory(ctx, (unsigned char *)t->input_data.data, t->input_data.len);
         doc = fz_open_document_with_stream(ctx, t->input_type, stm);
-        wri = fz_new_document_writer(ctx, "buf:", t->output_type, t->options);
+        wri = fz_new_document_writer_with_buffer(ctx, obuf, t->output_type, t->options);
         runrange(ctx, doc, t->range, wri);
         fz_close_document_writer(ctx, wri);
     } fz_always(ctx) {
