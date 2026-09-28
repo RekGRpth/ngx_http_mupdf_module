@@ -93,8 +93,8 @@ static ngx_int_t ngx_http_mupdf_handler(ngx_http_request_t *r) {
         doc = fz_open_document_with_stream(ctx, input_type, stm);
         wri = fz_new_document_writer(ctx, "buf:", output_type, options);
         runrange(ctx, doc, range, wri);
+        fz_close_document_writer(ctx, wri);
     } fz_always(ctx) {
-        if (wri) fz_close_document_writer(ctx, wri);
         if (wri) fz_drop_document_writer(ctx, wri);
         if (doc) fz_drop_document(ctx, doc);
         if (stm) fz_drop_stream(ctx, stm);
